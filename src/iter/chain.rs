@@ -217,6 +217,16 @@ where
     }
 }
 
+impl<A, B> PopProducer for ChainProducer<A, B>
+    where
+        A: PopProducer,
+        B: PopProducer<Item=A::Item>,
+{
+    fn pop(&mut self) -> Option<A::Item> {
+        if self.a_len > 0 { self.a.pop() } else { self.b.pop() }
+    }
+}
+
 /// ////////////////////////////////////////////////////////////////////////
 /// Wrapper for Chain to implement ExactSizeIterator
 
@@ -266,3 +276,4 @@ where
         self.chain.next_back()
     }
 }
+

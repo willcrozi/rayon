@@ -102,3 +102,7 @@ impl<T: Send> Producer for EmptyProducer<T> {
         folder
     }
 }
+
+impl<T: Send> PopProducer for EmptyProducer<T> {
+    fn pop(&mut self) -> Option<Self::Item> { None }
+}

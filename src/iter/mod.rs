@@ -2838,6 +2838,13 @@ pub trait IndexedParallelIterator: ParallelIterator {
     fn with_producer<CB: ProducerCallback<Self::Item>>(self, callback: CB) -> CB::Output;
 }
 
+/// ...
+pub trait PopParallelIterator: IndexedParallelIterator {
+    /// ...
+    fn with_pop_producer<CB>(self, callback: CB) -> CB::Output
+        where CB: PopProducerCallback<Self::Item>;
+}
+
 /// `FromParallelIterator` implements the creation of a collection
 /// from a [`ParallelIterator`]. By implementing
 /// `FromParallelIterator` for a given type, you define how it will be

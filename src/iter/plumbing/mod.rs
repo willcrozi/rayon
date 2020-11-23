@@ -32,6 +32,16 @@ pub trait ProducerCallback<T> {
         P: Producer<Item = T>;
 }
 
+/// ...
+pub trait PopProducerCallback<T> {
+    /// ...
+    type Output;
+
+    /// ...
+    fn pop_callback<P>(self, producer: P) -> Self::Output
+        where P: PopProducer<Item=T>;
+}
+
 /// A `Producer` is effectively a "splittable `IntoIterator`". That
 /// is, a producer is a value which can be converted into an iterator
 /// at any time: at that point, it simply produces items on demand,
@@ -108,6 +118,20 @@ pub trait Producer: Send + Sized {
         F: Folder<Self::Item>,
     {
         folder.consume_iter(self.into_iter())
+    }
+}
+
+/// Poppable producer (experiment)
+pub trait PopProducer: Producer {
+    /// Returns a clone of the first item of this Producer
+    fn pop(&mut self) -> Option<Self::Item>;
+
+    /// ...
+    fn split_pop_at(self, index: usize) -> (Self, Self, Option<Self::Item>) {
+        let (left, mut right) = self.split_at(index);
+        let popped = right.pop();
+
+        (left, right, popped)
     }
 }
 
