@@ -113,6 +113,15 @@ macro_rules! indexed_range_impl {
             }
         }
 
+        impl PopParallelIterator for Iter<$t> {
+            fn with_pop_producer<CB>(self, callback: CB) -> CB::Output
+            where
+                CB: PopProducerCallback<Self::Item>,
+            {
+                callback.pop_callback(IterProducer { range: self.range })
+            }
+        }
+
         impl Producer for IterProducer<$t> {
             type Item = <Range<$t> as Iterator>::Item;
             type IntoIter = Range<$t>;
@@ -128,6 +137,18 @@ macro_rules! indexed_range_impl {
                 let left = self.range.start..mid;
                 let right = mid..self.range.end;
                 (IterProducer { range: left }, IterProducer { range: right })
+            }
+        }
+
+        impl PopProducer for IterProducer<$t> {
+            fn pop(&mut self) -> Option<$t> {
+                if self.range.len() > 0 {
+                    let popped = self.range.start;
+                    self.range = (self.range.start + 1)..self.range.end;
+                    Some(popped)
+                } else {
+                    None
+                }
             }
         }
     };

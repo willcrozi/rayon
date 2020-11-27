@@ -33,6 +33,12 @@ delegate_indexed_iterator! {
     impl<T: Send>
 }
 
+delegate_pop_iterator! {
+    IntoIter<T> => T,
+    impl<T: Send>
+}
+
+
 /// Parallel iterator over an immutable reference to a result
 #[derive(Debug)]
 pub struct Iter<'a, T: Sync> {
@@ -63,6 +69,11 @@ delegate_indexed_iterator! {
     impl<'a, T: Sync + 'a>
 }
 
+delegate_pop_iterator! {
+    Iter<'a, T> => &'a T,
+    impl<'a, T: Sync + 'a>
+}
+
 /// Parallel iterator over a mutable reference to a result
 #[derive(Debug)]
 pub struct IterMut<'a, T: Send> {
@@ -81,6 +92,11 @@ impl<'a, T: Send, E> IntoParallelIterator for &'a mut Result<T, E> {
 }
 
 delegate_indexed_iterator! {
+    IterMut<'a, T> => &'a mut T,
+    impl<'a, T: Send + 'a>
+}
+
+delegate_pop_iterator! {
     IterMut<'a, T> => &'a mut T,
     impl<'a, T: Send + 'a>
 }

@@ -68,3 +68,28 @@ macro_rules! delegate_indexed_iterator {
         }
     }
 }
+
+/// Creates an 'poppable' parallel iterator implementation which simply wraps an
+/// inner type and delegates all methods inward.  The actual struct must already
+/// be declared with an `inner` field.
+macro_rules! delegate_pop_iterator {
+    ($iter:ty => $item:ty ,
+     impl $( $args:tt )*
+     ) => {
+        impl $( $args )* PopParallelIterator for $iter {
+            fn with_pop_producer<CB>(self, callback: CB) -> CB::Output
+                where CB: PopProducerCallback<Self::Item>
+            {
+                self.inner.with_pop_producer(callback)
+            }
+        }
+    }
+}
+
+// TODO attempt to deduplicate bodies of with_producer and with_pop_producer for already indexed
+//      parallel iterators, using two macros:
+//          delegate_with_producer
+//          delegate_with_pop_producer
+//  /
+//      maybe this is doable?
+

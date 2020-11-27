@@ -66,3 +66,12 @@ impl<T: Send> IndexedParallelIterator for Once<T> {
         Some(self.item).into_par_iter().with_producer(callback)
     }
 }
+
+impl<T: Send> PopParallelIterator for Once<T> {
+    fn with_pop_producer<CB>(self, callback: CB) -> CB::Output
+        where CB: PopProducerCallback<Self::Item>,
+    {
+        // Let `OptionProducer` handle it.
+        Some(self.item).into_par_iter().with_pop_producer(callback)
+    }
+}

@@ -79,6 +79,14 @@ impl<T: Send> IndexedParallelIterator for Empty<T> {
     }
 }
 
+impl<T: Send> PopParallelIterator for Empty<T> {
+    fn with_pop_producer<CB>(self, callback: CB) -> CB::Output
+        where CB: PopProducerCallback<Self::Item>,
+    {
+        callback.pop_callback(EmptyProducer(PhantomData))
+    }
+}
+
 /// Private empty producer
 struct EmptyProducer<T: Send>(PhantomData<T>);
 

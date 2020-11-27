@@ -74,6 +74,14 @@ impl<T: Send> IndexedParallelIterator for IntoIter<T> {
     }
 }
 
+impl<T: Send> PopParallelIterator for IntoIter<T> {
+    fn with_pop_producer<CB>(self, callback: CB) -> CB::Output
+        where CB: PopProducerCallback<Self::Item>
+    {
+        callback.pop_callback(OptionProducer { opt: self.opt} )
+    }
+}
+
 /// A parallel iterator over a reference to the [`Some`] variant of an [`Option`].
 ///
 /// The iterator yields one value if the [`Option`] is a [`Some`], otherwise none.
@@ -112,6 +120,11 @@ delegate_indexed_iterator! {
     impl<'a, T: Sync + 'a>
 }
 
+delegate_pop_iterator! {
+    Iter<'a, T> => &'a T,
+    impl<'a, T: Sync + 'a>
+}
+
 /// A parallel iterator over a mutable reference to the [`Some`] variant of an [`Option`].
 ///
 /// The iterator yields one value if the [`Option`] is a [`Some`], otherwise none.
@@ -138,6 +151,11 @@ impl<'a, T: Send> IntoParallelIterator for &'a mut Option<T> {
 }
 
 delegate_indexed_iterator! {
+    IterMut<'a, T> => &'a mut T,
+    impl<'a, T: Send + 'a>
+}
+
+delegate_pop_iterator! {
     IterMut<'a, T> => &'a mut T,
     impl<'a, T: Send + 'a>
 }
