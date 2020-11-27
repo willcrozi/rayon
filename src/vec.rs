@@ -86,6 +86,27 @@ pub struct Drain<'data, T: Send> {
     orig_len: usize,
 }
 
+impl<'data, T: Send> Drain<'data, T> {
+
+    // Produces a DrainProducer from this Drain. Avoids code duplication in with_producer and
+    // with_pop_producer methods.
+    // Safety: This method can only be invoked once on self and self must not be used after invoking.
+    // TODO find a way to consume self here (currently issues with lifetimes/drop-checker)
+    unsafe fn as_producer(&mut self) -> DrainProducer<'_, T>{
+        // Make the vector forget about the drained items, and temporarily the tail too.
+        let start = self.range.start;
+        self.vec.set_len(start);
+
+        // Get a correct borrow lifetime, then extend it to the original length.
+        let mut slice = &mut self.vec[start..];
+        slice = slice::from_raw_parts_mut(slice.as_mut_ptr(), self.range.len());
+
+        // The producer will move or drop each item from the drained range.
+        DrainProducer::new(slice)
+    }
+
+}
+
 impl<'data, T: Send> ParallelIterator for Drain<'data, T> {
     type Item = T;
 
@@ -113,21 +134,23 @@ impl<'data, T: Send> IndexedParallelIterator for Drain<'data, T> {
         self.range.len()
     }
 
-    fn with_producer<CB>(self, callback: CB) -> CB::Output
-    where
-        CB: ProducerCallback<Self::Item>,
+    fn with_producer<CB>(mut self, callback: CB) -> CB::Output
+        where CB: ProducerCallback<Self::Item>,
     {
         unsafe {
-            // Make the vector forget about the drained items, and temporarily the tail too.
-            let start = self.range.start;
-            self.vec.set_len(start);
+            callback.callback(self.as_producer())
+        }
+    }
+}
 
-            // Get a correct borrow lifetime, then extend it to the original length.
-            let mut slice = &mut self.vec[start..];
-            slice = slice::from_raw_parts_mut(slice.as_mut_ptr(), self.range.len());
-
-            // The producer will move or drop each item from the drained range.
-            callback.callback(DrainProducer::new(slice))
+impl<'data, T> PopParallelIterator for Drain<'data, T>
+    where T: Clone + Send,
+{
+    fn with_pop_producer<CB>(mut self, callback: CB) -> CB::Output
+        where CB: PopProducerCallback<Self::Item>,
+    {
+        unsafe {
+            callback.pop_callback(self.as_producer())
         }
     }
 }
