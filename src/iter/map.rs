@@ -108,6 +108,47 @@ where
     }
 }
 
+impl<I, F, R> PopParallelIterator for Map<I, F>
+    where I: PopParallelIterator,
+          F: Fn(I::Item) -> R + Sync + Send,
+          R: Send,
+
+{
+    fn with_pop_producer<CB>(self, callback: CB) -> CB::Output
+        where CB: PopProducerCallback<Self::Item>,
+    {
+        return self.base.with_pop_producer(Callback {
+            callback,
+            map_op: self.map_op,
+        });
+
+        struct Callback<CB, F> {
+            callback: CB,
+            map_op: F,
+        }
+
+        impl<T, F, R, CB> PopProducerCallback<T> for Callback<CB, F>
+            where
+                CB: PopProducerCallback<R>,
+                F: Fn(T) -> R + Sync,
+                R: Send,
+        {
+            type Output = CB::Output;
+
+            fn pop_callback<P>(self, base: P) -> CB::Output
+                where
+                    P: PopProducer<Item = T>,
+            {
+                let producer = MapProducer {
+                    base,
+                    map_op: &self.map_op,
+                };
+                self.callback.pop_callback(producer)
+            }
+        }
+    }
+}
+
 /// ////////////////////////////////////////////////////////////////////////
 
 struct MapProducer<'f, P, F> {
@@ -158,6 +199,17 @@ where
             map_op: self.map_op,
         };
         self.base.fold_with(folder1).base
+    }
+}
+
+impl<'f, P, F, R> PopProducer for MapProducer<'f, P, F>
+    where
+        P: PopProducer,
+        F: Fn(P::Item) -> R + Sync,
+        R: Send,
+{
+    fn pop(&mut self) -> Option<Self::Item> {
+        self.base.pop().map(|item| (self.map_op)(item))
     }
 }
 
