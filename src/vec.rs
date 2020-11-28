@@ -65,6 +65,16 @@ impl<T: Send> IndexedParallelIterator for IntoIter<T> {
     }
 }
 
+impl<T> PopParallelIterator for IntoIter<T>
+    where T: Send,
+{
+    fn with_pop_producer<CB>(mut self, callback: CB) -> CB::Output
+        where CB: PopProducerCallback<Self::Item>,
+    {
+        self.vec.par_drain(..).with_pop_producer(callback)
+    }
+}
+
 impl<'data, T: Send> ParallelDrainRange<usize> for &'data mut Vec<T> {
     type Iter = Drain<'data, T>;
     type Item = T;
@@ -144,7 +154,7 @@ impl<'data, T: Send> IndexedParallelIterator for Drain<'data, T> {
 }
 
 impl<'data, T> PopParallelIterator for Drain<'data, T>
-    where T: Clone + Send,
+    where T: Send,
 {
     fn with_pop_producer<CB>(mut self, callback: CB) -> CB::Output
         where CB: PopProducerCallback<Self::Item>,
