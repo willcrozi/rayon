@@ -185,7 +185,7 @@ impl<T: Send> Producer for OptionProducer<T> {
 }
 
 impl<T: Send> PopProducer for OptionProducer<T> {
-    fn pop(&mut self) -> Option<Self::Item> { self.opt.take() }
+    fn try_pop(&mut self) -> Option<Self::Item> { self.opt.take() }
 }
 
 /// Collect an arbitrary `Option`-wrapped collection.

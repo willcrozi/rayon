@@ -141,7 +141,7 @@ macro_rules! indexed_range_impl {
         }
 
         impl PopProducer for IterProducer<$t> {
-            fn pop(&mut self) -> Option<$t> {
+            fn try_pop(&mut self) -> Option<$t> {
                 if self.range.len() > 0 {
                     let popped = self.range.start;
                     self.range = (self.range.start + 1)..self.range.end;

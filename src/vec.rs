@@ -231,7 +231,7 @@ impl<'data, T: 'data + Send> Drop for DrainProducer<'data, T> {
 }
 
 impl <'data, T: 'data + Send> PopProducer for DrainProducer<'data, T> {
-    fn pop(&mut self) -> Option<T> {
+    fn try_pop(&mut self) -> Option<T> {
         if self.slice.is_empty() { return None; }
 
         unsafe {

@@ -112,5 +112,5 @@ impl<T: Send> Producer for EmptyProducer<T> {
 }
 
 impl<T: Send> PopProducer for EmptyProducer<T> {
-    fn pop(&mut self) -> Option<Self::Item> { None }
+    fn try_pop(&mut self) -> Option<Self::Item> { None }
 }
