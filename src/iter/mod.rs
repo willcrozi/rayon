@@ -127,6 +127,7 @@ mod interleave_shortest;
 mod intersperse;
 mod len;
 mod map;
+mod map_interleaved;
 mod map_with;
 mod multizip;
 mod noop;
@@ -171,6 +172,7 @@ pub use self::{
     intersperse::Intersperse,
     len::{MaxLen, MinLen},
     map::Map,
+    map_interleaved::MapInterleaved,
     map_with::{MapInit, MapWith},
     multizip::MultiZip,
     once::{once, Once},
@@ -190,6 +192,7 @@ pub use self::{
 };
 
 mod step_by;
+
 #[cfg(step_by)]
 pub use self::step_by::StepBy;
 
@@ -587,6 +590,24 @@ pub trait ParallelIterator: Sized + Send {
         R: Send,
     {
         Map::new(self, map_op)
+    }
+
+    /// `MapInterleaved` is an iterator that interleaves an iterators items
+    /// with the result of applying a map operation to each item.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rayon::prelude::*;
+    ///
+    /// let mut par_iter = (1..4).into_par_iter().map_interleaved(|x| x * 2);
+    ///
+    /// let interleaved: Vec<_> = par_iter.collect();
+    ///
+    /// assert_eq!(&interleaved[..], &[1, 2, 2, 4, 3, 6]);
+    /// ```
+    fn map_interleaved<F>(self, map_op: F) -> MapInterleaved<Self, F> {
+        MapInterleaved::new(self, map_op)
     }
 
     /// Applies `map_op` to the given `init` value with each item of this
