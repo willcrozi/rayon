@@ -1,6 +1,8 @@
 // Initial attempt with MapArgs as a struct.
 
 use std::ops::Range;
+use std::slice;
+use alloc::vec;
 
 // We need three distinct objects:
 //
@@ -9,12 +11,15 @@ use std::ops::Range;
 //
 //  * A splittable version
 
-pub(crate) trait Args: Sized + Clone + IntoIterator
+pub(crate) trait Args: Sized + Clone
 {
+    type Item;
+    type SubRange: ExactSizeIterator<Item=Self::Item>;
+
     fn len(&self) -> usize;
     fn split_at(self, index: usize) -> (Self, Self);
     fn pop(&mut self) -> Self::Item;
-    fn sub_range(&self, range: Range<usize>) -> Self;
+    fn sub_range(&self, range: Range<usize>) -> Self::SubRange;
     // fn map_iter<'f, F, T>(self, map_op: F) -> MapArgsIter<'f, F, T, Self>;
 }
 
@@ -29,6 +34,9 @@ impl<'a, A> Args for PartialArgs<'a, A>
         A: Clone,
         A: Args + 'a,
 {
+    type Item = A::Item;
+    type SubRange = A::SubRange;
+
     fn len(&self) -> usize {
         match self {
             PartialArgs::Ref(_, range) => { range.len() }
@@ -65,7 +73,7 @@ impl<'a, A> Args for PartialArgs<'a, A>
         }
     }
 
-    fn sub_range(&self, sub_range: Range<usize>) -> Self {
+    fn sub_range(&self, sub_range: Range<usize>) -> Self::SubRange {
         match self {
             PartialArgs::Ref(args, range) => {
                 let start = range.start + sub_range.start;
@@ -80,21 +88,24 @@ impl<'a, A> Args for PartialArgs<'a, A>
     }
 }
 
-impl<'a, A: Args> IntoIterator for PartialArgs<'a, A> {
-    type Item = A::Item;
-    type IntoIter = A::IntoIter;
-
-    fn into_iter(self) -> Self::IntoIter {
-        match self {
-            PartialArgs::Ref(args, range) => { args.sub_range(range).into_iter() }
-            PartialArgs::Owned(args) => { args.into_iter() }
-        }
-    }
-}
+// impl<'a, A: Args> IntoIterator for PartialArgs<'a, A> {
+//     type Item = A::Item;
+//     type IntoIter = A::IntoIter;
+//
+//     fn into_iter(self) -> Self::IntoIter {
+//         match self {
+//             PartialArgs::Ref(args, range) => { args.sub_range(range).into_iter() }
+//             PartialArgs::Owned(args) => { args.into_iter() }
+//         }
+//     }
+// }
 
 ////////////////////////////////////////////////////////////////////////////////
 
 impl<'t, T> Args for &'t[T] {
+    type Item = &'t T;
+    type SubRange = slice::Iter<'t, T>;
+
     fn len(&self) -> usize { <[T]>::len(&self) }
 
     fn split_at(self, index: usize) -> (Self, Self) {
@@ -107,8 +118,8 @@ impl<'t, T> Args for &'t[T] {
         result
     }
 
-    fn sub_range(&self, range: Range<usize>) -> Self {
-        &self[range]
+    fn sub_range(&self, range: Range<usize>) -> Self::SubRange {
+        self[&range].iter()
     }
 }
 
@@ -116,6 +127,9 @@ impl<'t, T> Args for Vec<T>
 where
     T: Clone,
 {
+    type Item = T;
+    type SubRange = vec::IntoIter<T>;
+
     fn len(&self) -> usize { <[T]>::len(&self) }
 
     fn split_at(mut self, index: usize) -> (Self, Self) {
@@ -127,31 +141,31 @@ where
         self.pop().unwrap()
     }
 
-    fn sub_range(&self, range: Range<usize>) -> Self {
-        self[range].to_vec()
+    fn sub_range(&self, range: Range<usize>) -> Self::SubRange {
+        self[&range]
     }
 }
 
-impl<I> Args for I
-where
-    I: ExactSizeIterator,
-{
-    fn len(&self) -> usize {
-        self.len()
-    }
-
-    fn split_at(self, index: usize) -> (Self, Self) {
-        unimplemented!()
-    }
-
-    fn pop(&mut self) -> Self::Item {
-        self.next().unwrap()
-    }
-
-    fn sub_range(&self, range: Range<usize>) -> Self {
-        unimplemented!()
-    }
-}
+// impl<I> Args for I
+// where
+//     I: ExactSizeIterator,
+// {
+//     fn len(&self) -> usize {
+//         self.len()
+//     }
+//
+//     fn split_at(self, index: usize) -> (Self, Self) {
+//         unimplemented!()
+//     }
+//
+//     fn pop(&mut self) -> Self::Item {
+//         self.next().unwrap()
+//     }
+//
+//     fn sub_range(&self, range: Range<usize>) -> Self {
+//         unimplemented!()
+//     }
+// }
 
 
 
