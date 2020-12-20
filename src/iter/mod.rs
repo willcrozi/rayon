@@ -193,6 +193,8 @@ pub use self::{
 
 mod step_by;
 mod args;
+mod util;
+pub use util::IterCache;
 
 #[cfg(step_by)]
 pub use self::step_by::StepBy;
