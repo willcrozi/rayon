@@ -193,6 +193,11 @@ impl<'a, T: Sync + Clone> Args<'a> for SliceArgs<'a, T> {
 // }
 
 
+////////////////////////////////////////////////////////////////////////////////
+// PartialBuffer
+
+// A lazily filled iterator cache that allows access to sub-slices/iterators of its contents while
+// filling from its source iterator on a just-in-time basis.
 pub struct PartialBuffer<I: Iterator> {
     len: usize,
     inner: Arc<ShardedLock<PartialBufferInner<I>>>,
@@ -200,15 +205,11 @@ pub struct PartialBuffer<I: Iterator> {
 
 impl<I> PartialBuffer<I>
 where
-    I: ExactSizeIterator,
+    I: ExactSizeIterator + DoubleEndedIterator,
 {
     fn new(iter: I) -> PartialBuffer<I> {
         let len = iter.len();
-        let vec = Vec::<I::Item>::with_capacity(len);
-        let buf = vec[..].as_ptr() as *mut I::Item;
-        mem::forget(vec);
-
-        let inner = PartialBufferInner { iter, ptr: buf, uninit: 0..len, _marker: PhantomData };
+        let inner = PartialBufferInner::new(iter);
 
         PartialBuffer { len, inner: Arc::new(ShardedLock::new(inner)) }
     }
@@ -224,13 +225,13 @@ where
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// Partial Buffer
 
 // TODO
 //  * handle ZSTs
 //  * determine if wen should use NonNull
 //  * manual allocation/deallocation
+
+// NOTE: we can't use reallocation since we share slices before we are filling the buffer.
 
 struct PartialBufferInner<I: Iterator>
 {
@@ -245,9 +246,20 @@ impl<I> PartialBufferInner<I>
 where
     I: ExactSizeIterator + DoubleEndedIterator,
 {
-    unsafe fn alloc(&mut self) {
+    fn new(iter: I) -> Self {
+        PartialBufferInner{
+            iter,
+            ptr: std::ptr::null_mut(),
+            cap: 0,
+            uninit: 0..0,
+            _marker: PhantomData,
+        }
+    }
+
+    unsafe fn alloc(&mut self, cap: usize) {
         let elem_size = mem::size_of::<I::Item>();
-        let
+        let layout = Layout::array::<I::Item>(cap).unwrap();
+        self.ptr = alloc::alloc(layout) as *mut I::Item;
     }
 
     unsafe fn fill_front(&mut self, mut count: usize)
