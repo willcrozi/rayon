@@ -4,11 +4,13 @@
 
 use crossbeam_utils::sync::ShardedLock;
 
-use std::slice;
+use std::{slice, mem};
 use std::iter;
 use std::ops::Range;
 use std::sync::Arc;
-
+use std::ptr::{drop_in_place, NonNull};
+use std::marker::PhantomData;
+use std::alloc::{self, Layout};
 
 
 // We need three distinct objects:
@@ -125,327 +127,199 @@ impl<'a, T: Sync + Clone> Args<'a> for SliceArgs<'a, T> {
 ////////////////////////////////
 // Iterator source adaptor
 
-pub struct IterArgs<I: Iterator> {
-    inner: Arc<ShardedLock<IterArgsInner<I>>>
-}
-
-struct IterArgsInner<I: Iterator> {
-    src: I,
-    buf: Vec<I::Item>,
-}
-
-impl<'a, I> Args<'a> for IterArgs<I>
-where
-    I: ExactSizeIterator + DoubleEndedIterator + Send + Sync,
-    I::Item: Clone + Send + Sync + 'a,
-{
-    type Item = I::Item;
-    type Iter = iter::Cloned<slice::Iter<'a, I::Item>>;
-
-    fn len(&self) -> usize {
-        let inner = self.inner.read().unwrap();
-        inner.src.len() + inner.buf.len()
-    }
-
-    fn get(&self, index: usize) -> &Self::Item {
-        let inner = self.inner.read().unwrap();
-
-        // Sanity check on index.
-        debug_assert!(index < (inner.src.len() + inner.buf.len()));
-
-        // Return the ref to the element if we have it buffered.
-        if index < inner.buf.len() {
-            return &inner.buf[index];
-        }
-
-        // Swap the read lock for a write lock.
-        drop(inner);
-        let mut inner = self.inner.write().unwrap();
-
-        // Lazy buffer fill if required.
-        if index >= inner.buf.len() {
-            let delta = (index - inner.buf.len()) + 1;
-            // let extra = inner.src.by_ref().take(delta);
-            inner.buf.extend(inner.src.by_ref().take(delta));
-            debug_assert!(inner.buf.len() > index);
-        }
-
-        // NOTE:It seems theres no way to do this without a type with an unsafe implementation
-        //      allowing slices to be created from an area of memory still being written to. By
-        //      carefully tracking the uninitialised area(s) this could be done.
-        //      * Allocate the capacity needed to hold all items from the iterator and place behind
-        //        a raw pointer.
-        //      * Populate from a double-ended, exact-sized iterator, keeping track of uninitialised
-        //        middle range.
-        //      * Protect state (empty range) using a read-write lock.
-        //
-
-        &inner.buf[index]
-    }
-
-    fn iter_range(&'a self, range: Range<usize>) -> Self::Iter {
-        let inner = self.inner.read().unwrap();
-        debug_assert!(range.start <= inner.buf.len() && range.end <= inner.buf.len());
-        inner.buf[range].iter().cloned()
-    }
-}
-
-// impl<'a, I> Args<'a> for I
+// pub struct IterArgs<I: Iterator> {
+//     inner: Arc<ShardedLock<IterArgsInner<I>>>
+// }
+//
+// struct IterArgsInner<I: Iterator> {
+//     src: I,
+//     buf: Vec<I::Item>,
+// }
+//
+// impl<'a, I> Args<'a> for IterArgs<I>
 // where
-//     I: ExactSizeIterator + DoubleEndedIterator,
+//     I: ExactSizeIterator + DoubleEndedIterator + Send + Sync,
+//     I::Item: Clone + Send + Sync + 'a,
 // {
 //     type Item = I::Item;
 //     type Iter = iter::Cloned<slice::Iter<'a, I::Item>>;
 //
-//     fn len(&self) -> usize { <Self as ExactSizeIterator>::len() }
+//     fn len(&self) -> usize {
+//         let inner = self.inner.read().unwrap();
+//         inner.src.len() + inner.buf.len()
+//     }
 //
 //     fn get(&self, index: usize) -> &Self::Item {
-//         unimplemented!()
+//         let inner = self.inner.read().unwrap();
+//
+//         // Sanity check on index.
+//         debug_assert!(index < (inner.src.len() + inner.buf.len()));
+//
+//         // Return the ref to the element if we have it buffered.
+//         if index < inner.buf.len() {
+//             return &inner.buf[index];
+//         }
+//
+//         // Swap the read lock for a write lock.
+//         drop(inner);
+//         let mut inner = self.inner.write().unwrap();
+//
+//         // Lazy buffer fill if required.
+//         if index >= inner.buf.len() {
+//             let delta = (index - inner.buf.len()) + 1;
+//             // let extra = inner.src.by_ref().take(delta);
+//             inner.buf.extend(inner.src.by_ref().take(delta));
+//             debug_assert!(inner.buf.len() > index);
+//         }
+//
+//         // NOTE:It seems theres no way to do this without a type with an unsafe implementation
+//         //      allowing slices to be created from an area of memory still being written to. By
+//         //      carefully tracking the uninitialised area(s) this could be done.
+//         //      * Allocate the capacity needed to hold all items from the iterator and place behind
+//         //        a raw pointer.
+//         //      * Populate from a double-ended, exact-sized iterator, keeping track of uninitialised
+//         //        middle range.
+//         //      * Protect state (empty range) using a read-write lock.
+//         //
+//
+//         &inner.buf[index]
 //     }
 //
 //     fn iter_range(&'a self, range: Range<usize>) -> Self::Iter {
-//         unimplemented!()
+//         let inner = self.inner.read().unwrap();
+//         debug_assert!(range.start <= inner.buf.len() && range.end <= inner.buf.len());
+//         inner.buf[range].iter().cloned()
 //     }
 // }
 
 
+pub struct PartialBuffer<I: Iterator> {
+    len: usize,
+    inner: Arc<ShardedLock<PartialBufferInner<I>>>,
+}
 
+impl<I> PartialBuffer<I>
+where
+    I: ExactSizeIterator,
+{
+    fn new(iter: I) -> PartialBuffer<I> {
+        let len = iter.len();
+        let vec = Vec::<I::Item>::with_capacity(len);
+        let buf = vec[..].as_ptr() as *mut I::Item;
+        mem::forget(vec);
 
+        let inner = PartialBufferInner { iter, buf, uninit: 0..len, _marker: PhantomData };
 
+        PartialBuffer { len, inner: Arc::new(ShardedLock::new(inner)) }
+    }
 
+    fn get(&self, index: usize) -> &I::Item {
+        assert!(index < self.len);
 
-
-
+        let inner = self.inner.read().unwrap();
+        if !inner.uninit.contains(&index) {
+            unsafe { return &*inner.buf.offset(index as isize) }
+        }
+        unimplemented!()
+    }
+}
 
 ////////////////////////////////////////////////////////////////////////////////
-// Junked:
+// Partial Buffer
 
-// #[derive(Clone)]
-// enum PartialArgs<'a, A: Args> {
-//     Ref(&'a A, Range<usize>),
-//     Owned(A),
-// }
+// TODO
+//  * handle ZSTs
+//  * determine if wen should use NonNull
+//  * manual allocation/deallocation
 
-// impl<'a, A> PartialArgs<'a, A>
-//     where
-//         A: Clone,
-//         A: Args + 'a,
-// {
-//     type Item = A::Item;
-//     type SubRange = A::SubRange;
-//
-//     fn len(&self) -> usize {
-//         match self {
-//             PartialArgs::Ref(_, range) => { range.len() }
-//             PartialArgs::Owned(args) => { args.len() }
-//         }
-//     }
-//
-//     fn split_at(self, index: usize) -> (Self, Self) {
-//         match self {
-//             PartialArgs::Ref(args, range) => {
-//                 debug_assert!(index <= range.len());
-//                 let mid = range.start + index;
-//                 (
-//                     PartialArgs::Ref(args, range.start..mid),
-//                     PartialArgs::Ref(args, mid..range.end)
-//                 )
-//             }
-//             PartialArgs::Owned(args) => {
-//                 let (left, right) = args.split_at(index);
-//                 (PartialArgs::Owned(left), PartialArgs::Owned(right))
-//             }
-//         }
-//     }
-//
-//     fn pop(&mut self) -> Self::Item {
-//         match self {
-//             PartialArgs::Ref(args, range) => {
-//                 let mut args = args.sub_range(range.clone());
-//                 let result = args.pop();
-//                 *self = PartialArgs::Owned(args);
-//                 result
-//             }
-//             PartialArgs::Owned(args) => { args.pop() }
-//         }
-//     }
-//
-//     fn sub_range(&self, sub_range: Range<usize>) -> Self::SubRange {
-//         match self {
-//             PartialArgs::Ref(args, range) => {
-//                 let start = range.start + sub_range.start;
-//                 let end = range.start + sub_range.end;
-//
-//                 PartialArgs::Ref(args, start..end)
-//             }
-//             PartialArgs::Owned(args) => {
-//                 PartialArgs::Owned(args.sub_range(sub_range))
-//             }
-//         }
-//     }
-// }
+struct PartialBufferInner<I: Iterator>
+{
+    iter: I,
+    buf: *mut I::Item,
+    uninit: Range<usize>,
+    _marker: PhantomData<I::Item>,
+}
 
-// impl<'a, A: Args> IntoIterator for PartialArgs<'a, A> {
-//     type Item = A::Item;
-//     type IntoIter = A::IntoIter;
-//
-//     fn into_iter(self) -> Self::IntoIter {
-//         match self {
-//             PartialArgs::Ref(args, range) => { args.sub_range(range).into_iter() }
-//             PartialArgs::Owned(args) => { args.into_iter() }
-//         }
-//     }
-// }
+impl<I> PartialBufferInner<I>
+where
+    I: ExactSizeIterator + DoubleEndedIterator,
+{
+    unsafe fn fill_front(&mut self, mut count: usize)
+    {
+        let offset = self.uninit.start as isize;
+        // TODO debug_asserts here
 
-////////////////////////////////////////////////////////////////////////////////
+        let slice = slice::from_raw_parts_mut(self.buf.offset(offset), count);
+        slice.iter_mut()
+            .zip(self.iter.by_ref())
+            .for_each(|(dest, val)| *dest = val);
 
-// impl<'t, T> Args for &'t[T] {
-//     type Item = &'t T;
-//     type SubRange = slice::Iter<'t, T>;
-//
-//     fn len(&self) -> usize { <[T]>::len(&self) }
-//
-//     fn split_at(self, index: usize) -> (Self, Self) {
-//         (&self[0..index], &self[index..0])
-//     }
-//
-//     fn pop(&mut self) -> Self::Item {
-//         let result = &self[0];
-//         *self = &self[1..];
-//         result
-//     }
-//
-//     fn sub_range(&self, range: Range<usize>) -> Self::SubRange {
-//         self[&range].iter()
-//     }
-// }
-//
-// impl<'t, T> Args for Vec<T>
-// where
-//     T: Clone,
-// {
-//     type Item = T;
-//     type SubRange = vec::IntoIter<T>;
-//
-//     fn len(&self) -> usize { <[T]>::len(&self) }
-//
-//     fn split_at(mut self, index: usize) -> (Self, Self) {
-//         let right = self.split_off(index);
-//         (self, right)
-//     }
-//
-//     fn pop(&mut self) -> Self::Item {
-//         self.pop().unwrap()
-//     }
-//
-//     fn sub_range(&self, range: Range<usize>) -> Self::SubRange {
-//         self[&range]
-//     }
-// }
+        self.uninit.start += count;
+    }
 
-// impl<I> Args for I
-// where
-//     I: ExactSizeIterator,
-// {
-//     fn len(&self) -> usize {
-//         self.len()
-//     }
-//
-//     fn split_at(self, index: usize) -> (Self, Self) {
-//         unimplemented!()
-//     }
-//
-//     fn pop(&mut self) -> Self::Item {
-//         self.next().unwrap()
-//     }
-//
-//     fn sub_range(&self, range: Range<usize>) -> Self {
-//         unimplemented!()
-//     }
-// }
+    unsafe fn fill_back(&mut self, mut count: usize)
+    {
+        let offset = (self.uninit.end - count) as isize;
+        // TODO debug_asserts here
 
+        let slice = slice::from_raw_parts_mut(self.buf.offset(offset), count);
+        slice.iter_mut().rev()
+            .zip(self.iter.by_ref().rev())
+            .for_each(|(dest, val)| *dest = val);
 
+        self.uninit.start += count;
+    }
 
+    // unsafe fn get(&self, index: usize) -> *const T {
+    //     // Check if value at `index` is filled.
+    //     if self.uninit.contains(&index) {
+    //         // Find which direction would fill soonest.
+    //         let fwd = (index - self.uninit.start) + 1;
+    //         let back = self.uninit.end - index;
+    //
+    //         if fwd <= back {
+    //             self.
+    //         }
+    //     }
+    //
+    //     self.buf.offset(index as isize)
+    // }
 
+    // unsafe fn slice
+}
 
+impl<I: Iterator> Drop for PartialBufferInner<I> {
+    fn drop(&mut self) {
+        // TODO decide where this lives and who stores len
+        let len: usize = unimplemented!();
 
+        let elem_size = mem::size_of::<I::Item>();
+        if len == 0 || elem_size == 0 {
+            // Zero sized, nothing to be done.
+            return;
+        }
 
+        unsafe {
+            // Drop the filled items at the front.
+            slice::from_raw_parts_mut(self.buf, self.uninit.start)
+                .iter_mut()
+                .for_each(|val| {
+                    drop_in_place(val as *mut I::Item)
+                });
 
+            // Drop the filled items at the back.
+            let count = len - self.uninit.end;
+            slice::from_raw_parts_mut(self.buf.offset(self.uninit.end as isize), count)
+                .iter_mut()
+                .for_each(|val| {
+                    drop_in_place(val as *mut I::Item)
+                });
 
-
-
-
-
-
-
-
-
-
-
-////////////////////////////////////////////////////////////////////////////////
-
-// struct MapArgsIter<'f, F, T, A: Args> {
-//     map_op: &'f F,
-//     item: T,
-//     args: A::IntoIter,
-// }
-//
-// impl<'f, F, T, A, R> Iterator for MapArgsIter<'f, F, T, A>
-// where
-//     F: Fn(T, A::Item) -> R,
-//     A: Args,
-//     T: Clone,
-// {
-//     type Item = R;
-//
-//     fn next(&mut self) -> Option<Self::Item> {
-//         unimplemented!()
-//     }
-// }
-
-
-// TODO Using a struct here might be more restrictive than using a trait. For example it might be
-//      possible to perform splits in a more efficient way when implementing a trait for some
-//      provded type here
-// pub(crate) struct MapArgs<'f, F, T, A> {
-//     item: T,
-//     map_op: &'f F,
-//     args: A,
-// }
-//
-// impl<'f, F, T, A, R> MapArgs<'f, F, T, A>
-//     where
-//         F: Fn(T, A::Item) -> R,
-//         T: Clone,
-//         A: Args,
-//         A::IntoIter: ExactSizeIterator,
-// {
-//     pub fn split_at(self, index: usize) -> (Self, Self) {
-//         let (l_args, r_args) = self.args.split_at(index);
-//         (
-//             MapArgs { item: self.item.clone(), map_op: self.map_op, args: l_args },
-//             MapArgs { item: self.item, map_op: self.map_op, args: r_args },
-//         )
-//     }
-//
-//     pub fn pop(&mut self) -> R {
-//         (self.map_op)(self.item.clone(), self.args.pop())
-//     }
-// }
-//
-// impl<'f, F, T, A, R> IntoIterator for MapArgs<'f, F, T, A>
-//     where
-//         F: Fn(T, A::Item) -> R,
-//         T: Clone,
-//         A: Args,
-//         A::IntoIter: ExactSizeIterator,
-// {
-//     type Item = R;
-//     type IntoIter = MapArgsIter;
-//
-//     fn into_iter(self) -> Self::IntoIter {
-//
-//     }
-// }
-//
+            // Deallocate the buffer memory.
+            // let c: NonNull<I::Item> = self.buf.into();
+            let layout = Layout::array::<I::Item>(len).unwrap();
+            alloc::dealloc(self.buf as *mut u8, layout);
+        }
+    }
+}
 
