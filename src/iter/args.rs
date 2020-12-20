@@ -4,7 +4,7 @@
 
 use crossbeam_utils::sync::ShardedLock;
 
-use std::{slice, mem};
+use std::{slice, mem, cmp};
 use std::iter;
 use std::ops::Range;
 use std::sync::Arc;
@@ -208,7 +208,7 @@ where
         let buf = vec[..].as_ptr() as *mut I::Item;
         mem::forget(vec);
 
-        let inner = PartialBufferInner { iter, buf, uninit: 0..len, _marker: PhantomData };
+        let inner = PartialBufferInner { iter, ptr: buf, uninit: 0..len, _marker: PhantomData };
 
         PartialBuffer { len, inner: Arc::new(ShardedLock::new(inner)) }
     }
@@ -218,7 +218,7 @@ where
 
         let inner = self.inner.read().unwrap();
         if !inner.uninit.contains(&index) {
-            unsafe { return &*inner.buf.offset(index as isize) }
+            unsafe { return &*inner.ptr.offset(index as isize) }
         }
         unimplemented!()
     }
@@ -235,7 +235,8 @@ where
 struct PartialBufferInner<I: Iterator>
 {
     iter: I,
-    buf: *mut I::Item,
+    ptr: *mut I::Item,
+    cap: usize,
     uninit: Range<usize>,
     _marker: PhantomData<I::Item>,
 }
@@ -244,12 +245,17 @@ impl<I> PartialBufferInner<I>
 where
     I: ExactSizeIterator + DoubleEndedIterator,
 {
+    unsafe fn alloc(&mut self) {
+        let elem_size = mem::size_of::<I::Item>();
+        let
+    }
+
     unsafe fn fill_front(&mut self, mut count: usize)
     {
         let offset = self.uninit.start as isize;
         // TODO debug_asserts here
 
-        let slice = slice::from_raw_parts_mut(self.buf.offset(offset), count);
+        let slice = slice::from_raw_parts_mut(self.ptr.offset(offset), count);
         slice.iter_mut()
             .zip(self.iter.by_ref())
             .for_each(|(dest, val)| *dest = val);
@@ -262,7 +268,7 @@ where
         let offset = (self.uninit.end - count) as isize;
         // TODO debug_asserts here
 
-        let slice = slice::from_raw_parts_mut(self.buf.offset(offset), count);
+        let slice = slice::from_raw_parts_mut(self.ptr.offset(offset), count);
         slice.iter_mut().rev()
             .zip(self.iter.by_ref().rev())
             .for_each(|(dest, val)| *dest = val);
@@ -290,26 +296,23 @@ where
 
 impl<I: Iterator> Drop for PartialBufferInner<I> {
     fn drop(&mut self) {
-        // TODO decide where this lives and who stores len
-        let len: usize = unimplemented!();
-
         let elem_size = mem::size_of::<I::Item>();
-        if len == 0 || elem_size == 0 {
+        if self.cap == 0 || elem_size == 0 {
             // Zero sized, nothing to be done.
             return;
         }
 
         unsafe {
             // Drop the filled items at the front.
-            slice::from_raw_parts_mut(self.buf, self.uninit.start)
+            slice::from_raw_parts_mut(self.ptr, self.uninit.start)
                 .iter_mut()
                 .for_each(|val| {
                     drop_in_place(val as *mut I::Item)
                 });
 
             // Drop the filled items at the back.
-            let count = len - self.uninit.end;
-            slice::from_raw_parts_mut(self.buf.offset(self.uninit.end as isize), count)
+            let count = self.cap - self.uninit.end;
+            slice::from_raw_parts_mut(self.ptr.offset(self.uninit.end as isize), count)
                 .iter_mut()
                 .for_each(|val| {
                     drop_in_place(val as *mut I::Item)
@@ -317,8 +320,8 @@ impl<I: Iterator> Drop for PartialBufferInner<I> {
 
             // Deallocate the buffer memory.
             // let c: NonNull<I::Item> = self.buf.into();
-            let layout = Layout::array::<I::Item>(len).unwrap();
-            alloc::dealloc(self.buf as *mut u8, layout);
+            let layout = Layout::array::<I::Item>(self.cap).unwrap();
+            alloc::dealloc(self.ptr as *mut u8, layout);
         }
     }
 }
