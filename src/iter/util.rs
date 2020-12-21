@@ -4,8 +4,9 @@ use std::{slice, mem, cmp};
 use std::fmt::{self, Debug};
 use std::ops::Range;
 use std::alloc::{self, Layout};
-use std::ptr::{NonNull, drop_in_place};
+use std::ptr::{self, NonNull};
 use std::sync::Arc;
+use std::mem::MaybeUninit;
 
 /// A lazy thread-safe cache for double-ended exact-sized iterators that allows shared access to
 /// sub-slices/iterators of its contents, filling from its source iterator as required.
@@ -14,6 +15,7 @@ use std::sync::Arc;
 /// read request.
 #[derive(Clone, Debug)]
 pub struct IterCache<I: Iterator> {
+    len: usize,
     inner: Arc<ShardedLock<IterCacheInner<I>>>,
 }
 
@@ -22,9 +24,10 @@ impl<I> IterCache<I>
         I: ExactSizeIterator + DoubleEndedIterator,
 {
     fn new(iter: I) -> IterCache<I> {
+        let len = iter.len();
         let inner = IterCacheInner::new(iter);
 
-        IterCache { inner: Arc::new(ShardedLock::new(inner)) }
+        IterCache { len, inner: Arc::new(ShardedLock::new(inner)) }
     }
 
     /// Fill's enough items from the source iterator in order to provide read access to the items
@@ -36,6 +39,8 @@ impl<I> IterCache<I>
     unsafe fn fill(&self, range: &Range<usize>)
                    -> ShardedLockReadGuard<'_, IterCacheInner<I>>
     {
+        // TODO move some of this into inner `fill` method?
+
         { // Read lock.
             let inner = self.inner.read().unwrap();
 
@@ -45,11 +50,6 @@ impl<I> IterCache<I>
                 range.end <= inner.cap
                 || (inner.cap == 0 && range.end <= inner.iter.len())
             );
-
-            // Problem case?
-            // range is not empty,
-            // cap is still zero
-            //
 
             // Fast path for read-only cases (i.e. buffer is filled for all indexes in `range`).
             if range.is_empty() || inner.is_filled(range) { return inner; }
@@ -96,7 +96,7 @@ impl<I> IterCache<I>
             let f_gap = range_fill_start - inner.empty.start;
             let b_gap = inner.empty.end - range_fill_end;
 
-            // If there is no front-gap (requested range is overlapping/continguous with filled area
+            // If there is no front-gap (requested range is overlapping/contiguous with filled area
             // at front) or if the front gap is smaller than the back gap after adjusting for a
             // a preference to front-fill, then we will from the front.
             const F_WEIGHT: usize = 0;
@@ -124,7 +124,8 @@ impl<I> IterCache<I>
     pub fn slice(&self, range: Range<usize>) -> &[I::Item] {
         unsafe {
             let inner = self.fill(&range);
-            let ptr = NonNull::new_unchecked(inner.ptr.as_ptr().offset(range.start as isize));
+            let raw_ptr = inner.ptr.as_ptr().offset(range.start as isize);
+            let ptr = NonNull::new_unchecked(raw_ptr);
 
             slice::from_raw_parts(ptr.as_ptr(), range.len())
         }
@@ -134,6 +135,12 @@ impl<I> IterCache<I>
     #[inline]
     pub fn iter_range(&self, range: Range<usize>) -> slice::Iter<'_, I::Item> {
         self.slice(range).iter()
+    }
+
+    /// TODO doc
+    #[inline]
+    pub fn iter(&self) -> slice::Iter<'_, I::Item> {
+        self.slice(0..self.len).iter()
     }
 }
 
@@ -190,7 +197,6 @@ impl<I> IterCacheInner<I>
         let ptr = alloc::alloc(layout) as *mut I::Item;
 
         self.ptr = NonNull::new(ptr).expect("memory allocation failure");
-
         self.cap = cap;
         self.empty = 0..cap;
     }
@@ -209,11 +215,10 @@ impl<I> IterCacheInner<I>
 
         let offset = self.empty.start as isize;
         let ptr = self.ptr.as_ptr().offset(offset);
-        let slice = slice::from_raw_parts_mut(ptr, count);
 
-        slice.iter_mut()
-            .zip(self.iter.by_ref())
-            .for_each(|(dest, val)| *dest = val);
+        for (i, val) in (0..count).zip(self.iter.by_ref()) {
+            ptr.offset(i as isize).write(val);
+        }
 
         self.empty.start += count;
     }
@@ -223,11 +228,10 @@ impl<I> IterCacheInner<I>
 
         let offset = (self.empty.end - count) as isize;
         let ptr = self.ptr.as_ptr().offset(offset);
-        let slice = slice::from_raw_parts_mut(ptr, count);
 
-        slice.iter_mut().rev()
-            .zip(self.iter.by_ref().rev())
-            .for_each(|(dest, val)| *dest = val);
+        for (i, val) in (0..count).zip(self.iter.by_ref().rev()) {
+            ptr.offset(-(i as isize)).write(val);
+        }
 
         self.empty.end -= count;
     }
@@ -242,27 +246,19 @@ impl<I: Iterator> Drop for IterCacheInner<I> {
         }
 
         unsafe {
-            // TODO drop each section of the buffer as an array in a single operation.
-
             // Drop the filled items at the front.
             let ptr = self.ptr.as_ptr();
-            slice::from_raw_parts_mut(ptr, self.empty.start)
-                .iter_mut()
-                .for_each(|val| {
-                    drop_in_place(val as *mut I::Item)
-                });
+            let count = self.empty.start;
+            let front = ptr::slice_from_raw_parts_mut(ptr, count);
+            ptr::drop_in_place(front);
 
             // Drop the filled items at the back.
-            let count = self.cap - self.empty.end;
             let ptr = self.ptr.as_ptr().offset(self.empty.end as isize);
-            slice::from_raw_parts_mut(ptr, count)
-                .iter_mut()
-                .for_each(|val| {
-                    drop_in_place(val as *mut I::Item)
-                });
+            let count = self.cap - self.empty.end;
+            let back = ptr::slice_from_raw_parts_mut(ptr, count);
+            ptr::drop_in_place(back);
 
             // Deallocate the buffer memory.
-            // let c: NonNull<I::Item> = self.buf.into();
             let layout = Layout::array::<I::Item>(self.cap).unwrap();
             let ptr = self.ptr.as_ptr() as *mut u8;
             alloc::dealloc(ptr, layout);
@@ -272,32 +268,12 @@ impl<I: Iterator> Drop for IterCacheInner<I> {
 
 #[cfg(test)]
 mod test {
-    use std::thread;
+    use std::{thread, mem};
     use std::time::Duration;
     use super::IterCache;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     // TODO drop test
-
-    fn iter_eq<I, J>(a: I, mut b: J) -> bool
-    where
-        I: Iterator,
-        I::Item: PartialEq,
-        J: Iterator<Item=I::Item>,
-    {
-        let mut pos = 0;
-        for a_item in a {
-            match b.next() {
-                Some(b_item) => if a_item != b_item {
-                    eprintln!("Items at position {} are not equal.", &pos);
-                    return false;
-                },
-                None => return false,
-            }
-            pos += 1;
-        }
-
-        true
-    }
 
     #[test]
     fn iter_cache() {
@@ -351,5 +327,58 @@ mod test {
         for t in handles {
             t.join().unwrap();
         }
+    }
+
+    #[test]
+    fn iter_cache_drop() {
+        struct DropMe<'a> { counter: &'a AtomicUsize }
+        struct DropMeZst { }
+
+        let drop_count = AtomicUsize::new(0);
+
+        impl<'a> Drop for DropMe<'a> {
+            fn drop(&mut self) {
+                let prev = self.counter.fetch_add(1, Ordering::SeqCst);
+                eprintln!("Dropping, count was: {}, now: {}", prev, prev + 1);
+            }
+        }
+
+        const LEN: usize = 32;
+
+        let mut v = vec![];
+        for i in 0..LEN {
+            v.push(DropMe { counter: &drop_count });
+        }
+
+        let iter = IterCache::new(v.into_iter());
+        let v2 = iter.iter().collect::<Vec<_>>();
+        mem::drop(iter);
+
+        assert_eq!(drop_count.load(Ordering::SeqCst), LEN);
+
+    }
+
+    ////////////////////////////////////////////////////////////////////////////
+
+    // TODO fix this (look at itertools test macros?
+    fn iter_eq<I, J>(a: I, mut b: J) -> bool
+        where
+            I: Iterator,
+            I::Item: PartialEq,
+            J: Iterator<Item=I::Item>,
+    {
+        let mut pos = 0;
+        for a_item in a {
+            match b.next() {
+                Some(b_item) => if a_item != b_item {
+                    eprintln!("Items at position {} are not equal.", &pos);
+                    return false;
+                },
+                None => return false,
+            }
+            pos += 1;
+        }
+
+        true
     }
 }
