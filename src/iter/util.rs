@@ -1,6 +1,6 @@
 use crossbeam_utils::sync::{ShardedLock, ShardedLockReadGuard};
 
-use std::{slice, mem};
+use std::{slice, mem, cmp};
 use std::fmt::{self, Debug};
 use std::ops::Range;
 use std::alloc::{self, Layout};
@@ -12,7 +12,7 @@ use std::sync::Arc;
 ///
 /// Optimised for reads. Currently allocates the its entire storage requirement on the first
 /// read request.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct IterCache<I: Iterator> {
     inner: Arc<ShardedLock<IterCacheInner<I>>>,
 }
@@ -27,42 +27,86 @@ impl<I> IterCache<I>
         IterCache { inner: Arc::new(ShardedLock::new(inner)) }
     }
 
-    // Fill's enough items from the source iterator in order to provide read access to the items
-    // at indexes within `range`. Returns a the read-lock on `inner` to allow callers immediate
-    // read access.
-    unsafe fn fill_required(&self, range: &Range<usize>)
-                            -> ShardedLockReadGuard<'_, IterCacheInner<I>>
+    /// Fill's enough items from the source iterator in order to provide read access to the items
+    /// at indexes within `range`. Returns a the read-lock on `inner` to allow callers immediate
+    /// read access.
+    ///
+    /// **Safety:** `range` must not exceed the capacity of this cache (which is the original
+    /// length of the source iterator when this cache was constructed.
+    unsafe fn fill(&self, range: &Range<usize>)
+                   -> ShardedLockReadGuard<'_, IterCacheInner<I>>
     {
-        let (uninit_start, uninit_end);
-
-        { // Read locked.
+        { // Read lock.
             let inner = self.inner.read().unwrap();
 
-            uninit_start = inner.uninit.start;
-            uninit_end = inner.uninit.end;
+            // The requested range's end must be less than our capacity, or less than the untouched
+            // iterator's length (if we have not allocated yet).
+            debug_assert!(
+                range.end <= inner.cap
+                || (inner.cap == 0 && range.end <= inner.iter.len())
+            );
 
-            // Optimise for read-only cases (buffer is filled for all indexes in `range`).
-            if uninit_start > range.end || uninit_end <= range.start {
-                return inner;
-            }
-        }
+            // Problem case?
+            // range is not empty,
+            // cap is still zero
+            //
 
-        // We need more elements from source iterator. Calculate the counts for items required at
-        // front and back.
-        let f_req = range.start.saturating_sub(uninit_start);
-        let b_req = uninit_end.saturating_sub(range.end);
-        let count = f_req + b_req;
+            // Fast path for read-only cases (i.e. buffer is filled for all indexes in `range`).
+            if range.is_empty() || inner.is_filled(range) { return inner; }
 
-        { // Write locked.
+        } // Read unlock.
+
+        // We need more elements from source iterator.
+        { // Write lock.
             let mut inner = self.inner.write().unwrap();
 
-            // Prefer filling from front.
-            if f_req > 0 {
-                inner.fill_front(count);
-            } else {
-                inner.fill_back(count);
+            // Second check in case our requested range was filled in between dropping read lock
+            // and acquiring the write lock.
+            if inner.is_filled(range) {
+                // This time we need to drop the write lock and reacquire the read lock.
+                drop(inner);
+                return self.inner.read().unwrap();
             }
-        }
+
+            // Allocate memory if needed.
+            let zero_sized = mem::size_of::<I::Item>() == 0;
+            if !zero_sized && inner.cap == 0 {
+                let cap = inner.iter.len();
+                inner.alloc(cap);
+            }
+
+            debug_assert!(range.end <= inner.cap);
+
+            // Find the first and last positions within the requested range that are not yet filled.
+            let range_fill_start = cmp::max(range.start, inner.empty.start);
+            let range_fill_end = cmp::min(range.end, inner.empty.end);
+
+            if range_fill_start > range_fill_end {
+                println!("range: {:?}", &range);
+                println!("inner.empty: {:?}", &inner.empty);
+                panic!();
+            }
+
+            // Count of items within requested range that need filling.
+            debug_assert!(range_fill_start <= range_fill_end);
+            let range_fill_count = range_fill_end - range_fill_start;
+
+            // Now we can safely (without risk of underflow) find the gaps - items not in the range
+            // that would need filling, for both fill directions.
+            let f_gap = range_fill_start - inner.empty.start;
+            let b_gap = inner.empty.end - range_fill_end;
+
+            // If there is no front-gap (requested range is overlapping/continguous with filled area
+            // at front) or if the front gap is smaller than the back gap after adjusting for a
+            // a preference to front-fill, then we will from the front.
+            const F_WEIGHT: usize = 0;
+            if f_gap == 0 || f_gap < (b_gap + F_WEIGHT) {
+                inner.fill_front(range_fill_count + f_gap);
+            } else {
+                let first_empty = cmp::max(range.start, inner.empty.start);
+                inner.fill_back(range_fill_count + b_gap);
+            }
+        } // Write unlock.
 
         self.inner.read().unwrap()
     }
@@ -70,7 +114,7 @@ impl<I> IterCache<I>
     /// TODO doc
     pub fn get(&self, index: usize) -> &I::Item {
         unsafe {
-            let inner = self.fill_required(&(index..index + 1));
+            let inner = self.fill(&(index..index + 1));
             let ptr = inner.ptr.as_ptr().offset(index as isize);
             &*ptr
         }
@@ -79,7 +123,7 @@ impl<I> IterCache<I>
     /// TODO doc
     pub fn slice(&self, range: Range<usize>) -> &[I::Item] {
         unsafe {
-            let inner = self.fill_required(&range);
+            let inner = self.fill(&range);
             let ptr = NonNull::new_unchecked(inner.ptr.as_ptr().offset(range.start as isize));
 
             slice::from_raw_parts(ptr.as_ptr(), range.len())
@@ -100,7 +144,7 @@ struct IterCacheInner<I: Iterator>
     iter: I,
     ptr: NonNull<I::Item>,
     cap: usize,
-    uninit: Range<usize>,
+    empty: Range<usize>,
 }
 
 impl<I: Iterator + Debug> Debug for IterCacheInner<I> {
@@ -109,10 +153,13 @@ impl<I: Iterator + Debug> Debug for IterCacheInner<I> {
             .field("iter", &self.iter)
             .field("ptr", &self.ptr)
             .field("cap", &self.cap)
-            .field("uninit", &self.uninit)
+            .field("empty", &self.empty)
             .finish()
     }
 }
+
+unsafe impl<I: Iterator> Sync for IterCacheInner<I> {}
+unsafe impl<I: Iterator> Send for IterCacheInner<I> {}
 
 impl<I> IterCacheInner<I>
     where
@@ -120,18 +167,21 @@ impl<I> IterCacheInner<I>
 {
     fn new(iter: I) -> Self {
         let ptr = NonNull::dangling();
-        // TODO handle rare case where iterator length is usize::MAX (Range will not handle this)
-        let (cap, uninit) = match mem::size_of::<I::Item>() {
-            0 => (usize::MAX, 0..usize::MAX),
-            _ => (0, 0..0),
+        // TODO handle rare case where iterator length is usize::MAX (Range will not handle this),
+        //      switch to RangeInclusive?
+        let (cap, empty) = match mem::size_of::<I::Item>() {
+            // Zero-sized type. No allocation needed.
+            0 => (iter.len(), 0..iter.len()),
+            // Max-out empty range until allocation (saves check for zero capacity).
+            _ => (0, 0..usize::MAX),
         };
 
-        IterCacheInner { iter, ptr, cap, uninit }
+        IterCacheInner { iter, ptr, cap, empty }
     }
 
     unsafe fn alloc(&mut self, cap: usize) {
-        // ZSTs: If I::Item is zero-sized then we will never reach here, since self.cap will
-        // be set to usize::MAX at construction.
+        // ZSTs: If I::Item is zero-sized then we will never reach here.
+        debug_assert!(mem::size_of::<I::Item>() != 0);
 
         // Allocation must only happen once.
         debug_assert!(self.cap == 0);
@@ -139,18 +189,25 @@ impl<I> IterCacheInner<I>
         let layout = Layout::array::<I::Item>(cap).unwrap();
         let ptr = alloc::alloc(layout) as *mut I::Item;
 
-        self.ptr = NonNull::new_unchecked(ptr);
-        self.uninit = 0..cap;
+        self.ptr = NonNull::new(ptr).expect("memory allocation failure");
+
+        self.cap = cap;
+        self.empty = 0..cap;
+    }
+
+    /// Check the indexes in `range` returning `true` if they are filled, `false` otherwise.
+    /// Empty `range` and zero-capacity checks must be performed separately if needed.
+    #[inline]
+    fn is_filled(&self, range: &Range<usize>) -> bool {
+            self.empty.is_empty()
+            || range.end <= self.empty.start
+            || range.start >= self.empty.end
     }
 
     unsafe fn fill_front(&mut self, count: usize) {
-        if self.cap == 0 {
-            self.alloc(self.iter.len())
-        }
+        debug_assert!(count <= self.empty.len());
 
-        debug_assert!(count <= self.uninit.len());
-
-        let offset = self.uninit.start as isize;
+        let offset = self.empty.start as isize;
         let ptr = self.ptr.as_ptr().offset(offset);
         let slice = slice::from_raw_parts_mut(ptr, count);
 
@@ -158,17 +215,13 @@ impl<I> IterCacheInner<I>
             .zip(self.iter.by_ref())
             .for_each(|(dest, val)| *dest = val);
 
-        self.uninit.start += count;
+        self.empty.start += count;
     }
 
     unsafe fn fill_back(&mut self, count: usize) {
-        if self.cap == 0 {
-            self.alloc(self.iter.len())
-        }
+        debug_assert!(count <= self.empty.len());
 
-        debug_assert!(count <= self.uninit.len());
-
-        let offset = (self.uninit.end - count) as isize;
+        let offset = (self.empty.end - count) as isize;
         let ptr = self.ptr.as_ptr().offset(offset);
         let slice = slice::from_raw_parts_mut(ptr, count);
 
@@ -176,7 +229,7 @@ impl<I> IterCacheInner<I>
             .zip(self.iter.by_ref().rev())
             .for_each(|(dest, val)| *dest = val);
 
-        self.uninit.end -= count;
+        self.empty.end -= count;
     }
 }
 
@@ -189,17 +242,19 @@ impl<I: Iterator> Drop for IterCacheInner<I> {
         }
 
         unsafe {
+            // TODO drop each section of the buffer as an array in a single operation.
+
             // Drop the filled items at the front.
             let ptr = self.ptr.as_ptr();
-            slice::from_raw_parts_mut(ptr, self.uninit.start)
+            slice::from_raw_parts_mut(ptr, self.empty.start)
                 .iter_mut()
                 .for_each(|val| {
                     drop_in_place(val as *mut I::Item)
                 });
 
             // Drop the filled items at the back.
-            let count = self.cap - self.uninit.end;
-            let ptr = self.ptr.as_ptr().offset(self.uninit.end as isize);
+            let count = self.cap - self.empty.end;
+            let ptr = self.ptr.as_ptr().offset(self.empty.end as isize);
             slice::from_raw_parts_mut(ptr, count)
                 .iter_mut()
                 .for_each(|val| {
@@ -211,6 +266,90 @@ impl<I: Iterator> Drop for IterCacheInner<I> {
             let layout = Layout::array::<I::Item>(self.cap).unwrap();
             let ptr = self.ptr.as_ptr() as *mut u8;
             alloc::dealloc(ptr, layout);
+        }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::thread;
+    use std::time::Duration;
+    use super::IterCache;
+
+    // TODO drop test
+
+    fn iter_eq<I, J>(a: I, mut b: J) -> bool
+    where
+        I: Iterator,
+        I::Item: PartialEq,
+        J: Iterator<Item=I::Item>,
+    {
+        let mut pos = 0;
+        for a_item in a {
+            match b.next() {
+                Some(b_item) => if a_item != b_item {
+                    eprintln!("Items at position {} are not equal.", &pos);
+                    return false;
+                },
+                None => return false,
+            }
+            pos += 1;
+        }
+
+        true
+    }
+
+    #[test]
+    fn iter_cache() {
+        const ITER_LEN: usize = 1000;
+        const CHUNK_SIZE: usize = 100;
+
+        let iter = (0..ITER_LEN).map(|n| {
+            // println!(".map threadid: {:?}", thread::current().id());
+            thread::sleep(Duration::from_micros(200));
+            n
+        });
+
+        let cache = Box::new(IterCache::new(iter));
+        let mut handles = vec![];
+
+        for _ in 0..=16 {
+            let cache = cache.clone();
+
+            let handle = thread::spawn(move || {
+                for i in 0..(ITER_LEN  - CHUNK_SIZE) {
+                    // Front
+                    let f_range = i..(i + CHUNK_SIZE);
+                    let f_iter = cache.iter_range(f_range.clone());
+
+                    let result = cache.slice(f_range.clone());
+                    let mut expected = f_range.collect::<Vec<_>>();
+
+                    // println!("{:?}", &result);
+                    // assert!(iter_eq(f_iter, expected.iter()));
+                    assert_eq!(&result, &expected);
+
+                    // Back
+                    let base = (ITER_LEN - CHUNK_SIZE) - i;
+                    let b_range = base..(base + CHUNK_SIZE);
+                    let b_iter = cache.iter_range(b_range.clone());
+
+                    let result = cache.slice(b_range.clone());
+                    let expected = b_range.collect::<Vec<_>>();
+
+                    // println!("{:?}", &result);
+                    // assert!(iter_eq(b_iter, expected.iter()));
+                    assert_eq!(&result, &expected);
+
+                    // thread::sleep(Duration::from_micros(10000));
+                }
+            });
+
+            handles.push(handle);
+        }
+
+        for t in handles {
+            t.join().unwrap();
         }
     }
 }
