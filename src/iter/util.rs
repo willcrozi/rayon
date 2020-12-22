@@ -1,3 +1,5 @@
+use super::args::Args;
+
 use crossbeam_utils::sync::{ShardedLock, ShardedLockReadGuard};
 
 use std::{slice, mem, cmp};
@@ -109,6 +111,49 @@ impl<I> IterCache<I>
         self.inner.read().unwrap()
     }
 }
+
+impl<'a, I> Args<'a> for IterCache<I>
+where
+    I: ExactSizeIterator + DoubleEndedIterator + 'a,
+{
+    type Item = &'a I::Item;
+    type Iter = slice::Iter<'a, I::Item>;
+
+    fn len(&self) -> usize {
+        IterCache::len(self)
+    }
+
+    fn get(&'a self, index: usize) -> Self::Item {
+        IterCache::get(self, index)
+    }
+
+    fn iter_range(&'a self, range: Range<usize>) -> Self::Iter {
+        IterCache::iter_range(self, range)
+    }
+}
+
+// NOTE: Not possible it seems.
+// impl<I, Idx> ops::Index<Idx> for IterCache<I>
+// where
+//     Idx: slice::SliceIndex<[I::Item]>
+// {
+//     type Output = Idx::Output;
+//
+//     fn index(&self, index: Idx) -> &Self::Output {
+//         let inner = self.inner.read().unwrap();
+//
+//         // No way to do this without consuming the base iterator and filling every element.
+//         // This would be misleading and not acceptable for an operation involving slice notation.
+//         // The reason is the Index trait is opaque to us with regards numerical indexes. All we
+//         // know is that it can select an item/sub-slice when given a slice. This means we cannot
+//         // check and fill the necessary indexes, our only choice would be to create the slice
+//         // for the cache in order
+//
+//         // We can't implement SliceIndex ourselves as we would conflict with std's implementation
+//         // due to orphan rules.
+//     }
+// }
+
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -298,8 +343,7 @@ mod test {
         });
 
         // Test with single accesses towards each end.
-        let zst_iter = (0..100).map(|_| ());
-        test_iter_cache(zst_iter, |cache| {
+        test_iter_cache(zst_iter.clone(), |cache| {
             // This is done purely for the drop checking.
             let _items = vec![cache.get(21), cache.get(79)];
         });
@@ -308,7 +352,7 @@ mod test {
     #[test]
     fn iter_cache_ranges() {
         const ITER_LEN: usize = 100;
-        const CHUNK_SIZE: usize = 10;
+        const RANGE_LEN: usize = 10;
 
         test_iter_cache(0..ITER_LEN, |cache| {
             let mut handles = vec![];
@@ -317,9 +361,9 @@ mod test {
                 let cache = cache.clone();
 
                 let handle = thread::spawn(move || {
-                    for i in 0..(ITER_LEN - CHUNK_SIZE) {
+                    for i in 0..(ITER_LEN - RANGE_LEN) {
                         // Front
-                        let f_range = i..(i + CHUNK_SIZE);
+                        let f_range = i..(i + RANGE_LEN);
                         let f_iter = cache.iter_range(f_range.clone());
 
                         let result = f_iter.map(|item| item.0).collect::<Vec<_>>();
@@ -329,8 +373,8 @@ mod test {
                         thread::sleep(Duration::from_micros(50));
 
                         // Back
-                        let base = (ITER_LEN - CHUNK_SIZE) - i;
-                        let b_range = base..(base + CHUNK_SIZE);
+                        let base = (ITER_LEN - RANGE_LEN) - i;
+                        let b_range = base..(base + RANGE_LEN);
                         let b_iter = cache.iter_range(b_range.clone());
 
                         let result = b_iter.map(|item| item.0).collect::<Vec<_>>();
@@ -354,14 +398,14 @@ mod test {
     // Test helpers
     ////////////////////////////////////////////////////////////////////////////
 
-    static NEW_COUNT: AtomicUsize = AtomicUsize::new(0);
+    static CREATE_COUNT: AtomicUsize = AtomicUsize::new(0);
     static DROP_COUNT: AtomicUsize = AtomicUsize::new(0);
 
     #[derive(Clone)]
     struct TestItem<T>(T);
     impl<T> TestItem<T> {
         fn new(val: T) -> Self {
-            NEW_COUNT.fetch_add(1, Ordering::SeqCst);
+            CREATE_COUNT.fetch_add(1, Ordering::SeqCst);
             TestItem(val)
         }
     }
@@ -387,23 +431,21 @@ mod test {
         where I: ExactSizeIterator + DoubleEndedIterator + Clone,
               F: Fn(&IterCache<BaseIter<I>>)
     {
-        NEW_COUNT.store(0, Ordering::SeqCst);
+        CREATE_COUNT.store(0, Ordering::SeqCst);
         DROP_COUNT.store(0, Ordering::SeqCst);
 
         let base = base_iter(iter);
         let cache = IterCache::new(base);
 
+        // Perform the test operation.
         test_op(&cache);
 
+        // Drop the cache and check test item drop counts
         mem::drop(cache);
-        eprintln!("filled: {}, dropped: {}",
-                  NEW_COUNT.load(Ordering::SeqCst),
-                  DROP_COUNT.load(Ordering::SeqCst));
-
-        assert_eq!(NEW_COUNT.load(Ordering::SeqCst), DROP_COUNT.load(Ordering::SeqCst));
+        assert_eq!(CREATE_COUNT.load(Ordering::SeqCst), DROP_COUNT.load(Ordering::SeqCst));
     }
 
-    // TODO fix this (look at itertools test macros?
+    // TODO currently unused, fix this (look at itertools test macros?).
     fn _iter_eq<I, J>(a: I, mut b: J) -> bool
         where
             I: Iterator,
