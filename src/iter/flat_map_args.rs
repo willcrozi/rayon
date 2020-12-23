@@ -1,151 +1,11 @@
-use rayon::iter::plumbing::*;
-// use rayon::iter::
-use rayon::iter::*;
+use super::plumbing::*;
+use super::*;
 use std::{iter, slice};
 use std::ops::Range;
 use std::marker::PhantomData;
 
-// Ideas for how to split the args iterator:
-//
-//  * Make it parallel and splittable!
-//
-//  * Clone the whole IntoIter for every split and use front and back pointers
-//
-//  * Specify a 'collect' argument for args that indicates args should be collected
-
-// We should focus on three variants:
-//      - slice based,  possibly even parallel slices?
-//      - standard iterator based, uses args length as splitting limit, clones args on split
-//      - parallel iterator based for large numbers of args, args are indexed and thus splittable
-//
-//      Can we abstract these out with new trait(s)?
-
-
-/// Represents a splittable collection of arguments, of a known length, to be given to a mapping
-/// function.
-// Notes:
-//      * Clone:    When splitting the parallel iterator Args implementations will need to be
-//                  cloned. Therefore Clone will need to be required on Args at
-//                  IndexedParallelIterator implementations.
-//                  Of course Args can be implemented on a reference
-//      * Should Args extend IntoIterator? Or should we just have an iter_range method?
-
-// Args: a collection of 'arguments' with known length, that can be split into left and right halves
-//       at a given index.
-// MapArgs: owns map_op and args, producers hold a ref to this in order to apply to items
-// MapArgsIter: iterates over all mappings of map_op(item, arg).
-
-pub trait Args: Sized {
-    type Iter: Iterator<Item=Self::Item>;
-    type Item: Clone;
-
-    fn len(&self) -> usize;
-    fn iter_range(&self, range: Range<usize>) -> Self::Iter;
-    fn iter(&self) -> Self::Iter { self.iter_range(0..self.len()) }
-}
-
-impl<'a, T> Args for &'a [T] {
-    type Iter = slice::Iter<'a, T>;
-    type Item = &'a T;
-
-    fn len(&self) -> usize { <[T]>::len(self) }
-    fn iter_range(&self, range: Range<usize>) -> Self::Iter { self[range].iter() }
-    fn iter(&self) -> Self::Iter { <[T]>::iter(self) }
-}
-
-// Owns the mapping operation closure and the arguments. The main purpose of this type is as a
-// convenient (owning) container for the mapping closure and the arguments, and to reduce
-// type bounds boilerplate throughout the rayon trait impls.
-pub struct MapArgs<F, T, A, R>
-    where F: Fn(T, A::Item) -> R,
-          A: Args,
-          T: Clone,
-          R: Send,
-{
-    map_op: F,
-    args: A,
-    _marker: PhantomData<(T, R)>
-}
-
-impl<F, T, A, R> MapArgs<F, T, A, R>
-    where F: Fn(T, A::Item) -> R + Clone,
-          A: Args,
-          T: Clone,
-          R: Send,
-{
-    fn map_all<'f>(&'f self, item: T) -> MapArgsIter<'f, F, T, A> {
-        let args_iter = self.args.iter();
-        MapArgsIter { map_op: &self.map_op, args_iter, item}
-    }
-
-    fn map_range<'f>(&'f self, item: T, range: Range<usize>) -> MapArgsIter<'f, F, T, A> {
-        let args_iter = self.args.iter_range(range);
-        MapArgsIter { map_op: &self.map_op, args_iter, item}
-    }
-}
-
-pub struct MapArgsIter<'f, F, T, A>
-    where A: Args,
-          T: Clone,
-{
-    map_op: &'f F,
-    args_iter: A::Iter,
-    item: T,
-}
-
-impl<'f, F, T, A, R> Iterator for MapArgsIter<'f, F, T, A>
-    where F: Fn(T, A::Item) -> R,
-          A: Args,
-          T: Clone,
-{
-    type Item = R;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.args_iter.next()
-            .map(|arg| (self.map_op)(self.item.clone(), arg))
-    }
-}
-
-
-trait Split<T>
-    where Self: Sized,
-{
-    fn len(&self) -> usize;
-
-    fn split_at(self, index: usize) -> (Self, Self);
-}
-
-impl<T: Clone> Split<T> for Option<(T, Range<usize>)>{
-    fn len(&self) -> usize {
-        match self {
-            Some((_, range)) => range.len(),
-            None => 0,
-        }
-    }
-
-    fn split_at(self, index: usize) -> (Self, Self) {
-        match self {
-            Some((item, range)) => {
-                debug_assert!(0 < index && index <= range.end );
-
-                let (l_range, r_range) = (range.start..index, index..range.end);
-
-                // Split into left and right sides, avoiding unnecessary cloning.
-                if r_range.is_empty() {
-                    (Some((item, l_range)), None)
-                } else if l_range.is_empty() {
-                    (None, Some((item, r_range)))
-                } else {
-                    (Some((item.clone(), l_range)), Some((item, r_range)))
-                }
-            }
-            None => {
-                debug_assert!(index == 0);
-                (None, None)
-            }
-        }
-    }
-}
+// TODO future ideas:
+//      * version with parallel arguments (uses poppable producer)
 
 // TODO a type that wraps Fn and Args, maybe call it MapArgs?
 //      benefits:
@@ -815,3 +675,101 @@ impl<'f, C, F, T, A, R> Folder<T> for FlatMapExactFolder<'f, C, F, T, A>
         self.base.full()
     }
 }
+
+////////////////////////////////////////////////////////////////////////////////////////
+// Dumping ground
+////////////////////////////////////////////////////////////////////////////////////////
+
+// // Owns the mapping operation closure and the arguments. The main purpose of this type is as a
+// // convenient (owning) container for the mapping closure and the arguments, and to reduce
+// // type bounds boilerplate throughout the rayon trait impls.
+// pub struct MapArgs<F, T, A, R>
+//     where F: Fn(T, A::Item) -> R,
+//           A: Args,
+//           T: Clone,
+//           R: Send,
+// {
+//     map_op: F,
+//     args: A,
+//     _marker: PhantomData<(T, R)>
+// }
+//
+// impl<F, T, A, R> MapArgs<F, T, A, R>
+//     where F: Fn(T, A::Item) -> R + Clone,
+//           A: Args,
+//           T: Clone,
+//           R: Send,
+// {
+//     fn map_all<'f>(&'f self, item: T) -> MapArgsIter<'f, F, T, A> {
+//         let args_iter = self.args.iter();
+//         MapArgsIter { map_op: &self.map_op, args_iter, item}
+//     }
+//
+//     fn map_range<'f>(&'f self, item: T, range: Range<usize>) -> MapArgsIter<'f, F, T, A> {
+//         let args_iter = self.args.iter_range(range);
+//         MapArgsIter { map_op: &self.map_op, args_iter, item}
+//     }
+// }
+//
+// pub struct MapArgsIter<'f, F, T, A>
+//     where A: Args,
+//           T: Clone,
+// {
+//     map_op: &'f F,
+//     args_iter: A::Iter,
+//     item: T,
+// }
+//
+// impl<'f, F, T, A, R> Iterator for MapArgsIter<'f, F, T, A>
+//     where F: Fn(T, A::Item) -> R,
+//           A: Args,
+//           T: Clone,
+// {
+//     type Item = R;
+//
+//     fn next(&mut self) -> Option<Self::Item> {
+//         self.args_iter.next()
+//             .map(|arg| (self.map_op)(self.item.clone(), arg))
+//     }
+// }
+//
+//
+// trait Split<T>
+//     where Self: Sized,
+// {
+//     fn len(&self) -> usize;
+//
+//     fn split_at(self, index: usize) -> (Self, Self);
+// }
+//
+// impl<T: Clone> Split<T> for Option<(T, Range<usize>)>{
+//     fn len(&self) -> usize {
+//         match self {
+//             Some((_, range)) => range.len(),
+//             None => 0,
+//         }
+//     }
+//
+//     fn split_at(self, index: usize) -> (Self, Self) {
+//         match self {
+//             Some((item, range)) => {
+//                 debug_assert!(0 < index && index <= range.end );
+//
+//                 let (l_range, r_range) = (range.start..index, index..range.end);
+//
+//                 // Split into left and right sides, avoiding unnecessary cloning.
+//                 if r_range.is_empty() {
+//                     (Some((item, l_range)), None)
+//                 } else if l_range.is_empty() {
+//                     (None, Some((item, r_range)))
+//                 } else {
+//                     (Some((item.clone(), l_range)), Some((item, r_range)))
+//                 }
+//             }
+//             None => {
+//                 debug_assert!(index == 0);
+//                 (None, None)
+//             }
+//         }
+//     }
+// }
