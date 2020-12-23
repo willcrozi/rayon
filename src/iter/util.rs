@@ -1,5 +1,3 @@
-use super::args::Args;
-
 use crossbeam_utils::sync::{ShardedLock, ShardedLockReadGuard};
 
 use std::{slice, mem, cmp};
@@ -8,6 +6,126 @@ use std::ops::Range;
 use std::alloc::{self, Layout};
 use std::ptr::{self, NonNull};
 use std::sync::Arc;
+
+// TODO rename Args: it's not specific to arguments!
+/// A trait representing a list of arguments.
+///
+/// `Args` is intended to be shared (across threads) in order to allow parallel iterator producers
+/// to dynamically split and adjust their contents... TODO
+pub trait Args<'a>: Sync + Sized
+{
+    /// The type of the arguments provided by this `Args`.
+    type Item: Clone;
+
+    /// The type of the iterator provided by this `Args`.
+    type Iter: Iterator<Item=Self::Item> + 'a;
+
+    /// The number of arguments provided by this `Args`.
+    fn len(&self) -> usize;
+
+    /// Returns the argument at position `index`.
+    fn get(&'a self, index: usize) -> Self::Item;
+
+    /// Returns an iterator over the arguments at the positions within `range`.
+    fn iter_range(&'a self, range: Range<usize>) -> Self::Iter;
+}
+
+// TODO maybe default iter type that is used by a default impl. of iter_range (and full iter method?)
+
+
+////////////////////////////////////////////////////////////////////////////////
+// PartialArgs
+////////////////////////////////////////////////////////////////////////////////
+
+/// Represents a partial set of arguments that can be split and 'popped' (in a stack like fashion).
+pub struct PartialArgs<'a, A: Args<'a>, > {
+    args: &'a A,
+    range: Range<usize>,
+}
+
+impl<'a, A: Args<'a> + Debug> Debug for PartialArgs<'a, A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PartialArgs")
+            .field("args", &self.args)
+            .field("range", &self.range)
+            .finish()
+    }
+}
+
+impl<'a, A> PartialArgs<'a, A>
+    where
+        A: Args<'a>,
+        A::Item: Clone,
+{
+    /// Returns the number of arguments contained.
+    #[inline]
+    pub fn len(&self) -> usize { self.range.len() }
+
+    // TODO maybe implement try_pop...
+    /// Removes the first argument and returns it.
+    pub fn pop(&mut self) -> A::Item {
+        debug_assert!(self.len() > 1);
+
+        let index = self.range.start;
+        self.range.start += 1;
+
+        self.args.get(index).clone()
+    }
+
+    /// Splits this set of partial arguments into left and right halves at the position `index`.
+    pub fn split_at(&mut self, index: usize) -> (Self, Self) {
+        debug_assert!(self.len() >= index);
+        let split = self.range.start + index;
+
+        (
+            PartialArgs { args: self.args, range: self.range.start..split },
+            PartialArgs { args: self.args, range: split..self.range.end },
+        )
+    }
+}
+
+impl<'a, A: Args<'a>> IntoIterator for PartialArgs<'a, A>
+    where
+        A::Item: Clone,
+{
+    type Item = A::Item;
+    type IntoIter = A::Iter;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.args.iter_range(self.range)
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// SliceArgs
+////////////////////////////////////////////////////////////////////////////////
+
+/// A slice of arguments.
+pub struct SliceArgs<'a, T>(&'a [T]);
+
+impl<'a, A: Args<'a> + Debug> Debug for SliceArgs<'a, A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("SliceArgs").finish()
+    }
+}
+
+impl<'a, T: Sync + Clone> Args<'a> for SliceArgs<'a, T> {
+    type Item = &'a T;
+    type Iter = slice::Iter<'a, T>;
+
+    #[inline]
+    fn len(&self) -> usize { self.0.len() }
+
+    #[inline]
+    fn get(&'a self, index: usize) -> Self::Item { &self.0[index] }
+
+    #[inline]
+    fn iter_range(&'a self, range: Range<usize>) -> Self::Iter { self.0[range].iter() }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// IterCache
+////////////////////////////////////////////////////////////////////////////////
 
 /// A lazy thread-safe cache for double-ended exact-sized iterators that allows shared access to
 /// sub-slices/iterators of its contents, filling from its source iterator as required.
@@ -58,6 +176,11 @@ impl<I> IterCache<I>
         }
     }
 
+    // TODO Iterators: maybe make them more lazy, fill from base as we yield items, storing the
+    //      the owned values as we go?
+    //      Would need an additional simple iter type that holds a ref to IterCache and tracks
+    //      outstanding items with a range.
+
     /// Return's an iterator of references to items at positions within `range`, internally filling
     /// from the base iterator if required.
     #[inline]
@@ -73,11 +196,11 @@ impl<I> IterCache<I>
     }
 
     /// Fill's enough items from the source iterator in order to provide read access to the items
-/// at indexes within `range`. Returns a the read-lock on `inner` to allow callers immediate
-/// read access.
-///
-/// **Safety:** `range` must not exceed the capacity of this cache (which is the original
-/// length of the source iterator when this cache was constructed.
+    /// at indexes within `range`. Returns a the read-lock on `inner` to allow callers immediate
+    /// read access.
+    ///
+    /// **Safety:** `range` must not exceed the capacity of this cache (which is the original
+    /// length of the source iterator when this cache was constructed.
     unsafe fn fill(&self, range: &Range<usize>)
                    -> ShardedLockReadGuard<'_, IterCacheInner<I>>
     {
@@ -155,6 +278,8 @@ where
 // }
 
 
+////////////////////////////////////////////////////////////////////////////////
+// IterCacheInner
 ////////////////////////////////////////////////////////////////////////////////
 
 // NOTE: we can't use reallocation since we share slices before we are filling the buffer.

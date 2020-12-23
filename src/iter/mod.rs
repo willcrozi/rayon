@@ -193,13 +193,8 @@ pub use self::{
 
 mod step_by;
 
-mod args;
 mod util;
-
-pub use self::{
-    args::{Args, PartialArgs, SliceArgs},
-    util::IterCache,
-};
+pub use self::util::{Args, PartialArgs, SliceArgs, IterCache};
 
 #[cfg(step_by)]
 pub use self::step_by::StepBy;
