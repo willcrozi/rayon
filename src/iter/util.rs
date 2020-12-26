@@ -12,25 +12,36 @@ use std::sync::Arc;
 ///
 /// `Args` is intended to be shared (across threads) in order to allow parallel iterator producers
 /// to dynamically split and adjust their contents... TODO
-pub trait Args<'a>: Sync + Sized
+pub trait Args: Sync + Sized
 {
     /// The type of the arguments provided by this `Args`.
     type Item: Clone;
 
     /// The type of the iterator provided by this `Args`.
-    type Iter: Iterator<Item=Self::Item> + 'a;
+    type Iter: Iterator<Item=Self::Item>;
 
     /// The number of arguments provided by this `Args`.
     fn len(&self) -> usize;
 
     /// Returns the argument at position `index`.
-    fn get(&'a self, index: usize) -> Self::Item;
+    fn get<'a>(&'a self, index: usize) -> Self::Item;
 
     /// Returns an iterator over the arguments at the positions within `range`.
-    fn iter_range(&'a self, range: Range<usize>) -> Self::Iter;
+    fn iter_range<'a>(&'a self, range: Range<usize>) -> Self::Iter;
 }
 
 // TODO maybe default iter type that is used by a default impl. of iter_range (and full iter method?)
+
+// Let's get this straight:
+// Args _owns_ the items, whether they be moved in structs or moved-in references
+
+// Scenarios:
+// impl Args for &[T]
+// Item: &T
+
+// impl Args for Iterator<Item=T>
+// Item: &T
+
 
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -38,12 +49,12 @@ pub trait Args<'a>: Sync + Sized
 ////////////////////////////////////////////////////////////////////////////////
 
 /// Represents a partial set of arguments that can be split and 'popped' (in a stack like fashion).
-pub struct PartialArgs<'a, A: Args<'a>, > {
+pub struct PartialArgs<'a, A: Args> {
     args: &'a A,
     range: Range<usize>,
 }
 
-impl<'a, A: Args<'a> + Debug> Debug for PartialArgs<'a, A> {
+impl<'a, A: Args + Debug> Debug for PartialArgs<'a, A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PartialArgs")
             .field("args", &self.args)
@@ -54,7 +65,7 @@ impl<'a, A: Args<'a> + Debug> Debug for PartialArgs<'a, A> {
 
 impl<'a, A> PartialArgs<'a, A>
     where
-        A: Args<'a>,
+        A: Args,
         A::Item: Clone,
 {
     /// Returns the number of arguments contained.
@@ -84,7 +95,7 @@ impl<'a, A> PartialArgs<'a, A>
     }
 }
 
-impl<'a, A: Args<'a>> IntoIterator for PartialArgs<'a, A>
+impl<'a, A: Args> IntoIterator for PartialArgs<'a, A>
     where
         A::Item: Clone,
 {
@@ -103,13 +114,13 @@ impl<'a, A: Args<'a>> IntoIterator for PartialArgs<'a, A>
 /// A slice of arguments.
 pub struct SliceArgs<'a, T>(&'a [T]);
 
-impl<'a, A: Args<'a> + Debug> Debug for SliceArgs<'a, A> {
+impl<'a, A: Args + Debug> Debug for SliceArgs<'a, A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_tuple("SliceArgs").finish()
     }
 }
 
-impl<'a, T: Sync + Clone> Args<'a> for SliceArgs<'a, T> {
+impl<'a, T: Sync + Clone> Args for SliceArgs<'a, T> {
     type Item = &'a T;
     type Iter = slice::Iter<'a, T>;
 
@@ -117,10 +128,10 @@ impl<'a, T: Sync + Clone> Args<'a> for SliceArgs<'a, T> {
     fn len(&self) -> usize { self.0.len() }
 
     #[inline]
-    fn get(&'a self, index: usize) -> Self::Item { &self.0[index] }
+    fn get(&self, index: usize) -> Self::Item { &self.0[index] }
 
     #[inline]
-    fn iter_range(&'a self, range: Range<usize>) -> Self::Iter { self.0[range].iter() }
+    fn iter_range(&self, range: Range<usize>) -> Self::Iter { self.0[range].iter() }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -235,9 +246,10 @@ impl<I> IterCache<I>
     }
 }
 
-impl<'a, I> Args<'a> for IterCache<I>
+impl<'a, I> Args for &'a IterCache<I>
 where
-    I: ExactSizeIterator + DoubleEndedIterator + 'a,
+    I: ExactSizeIterator + DoubleEndedIterator,
+    I::Item: Sync,
 {
     type Item = &'a I::Item;
     type Iter = slice::Iter<'a, I::Item>;
@@ -246,11 +258,11 @@ where
         IterCache::len(self)
     }
 
-    fn get(&'a self, index: usize) -> Self::Item {
+    fn get(&self, index: usize) -> Self::Item {
         IterCache::get(self, index)
     }
 
-    fn iter_range(&'a self, range: Range<usize>) -> Self::Iter {
+    fn iter_range(&self, range: Range<usize>) -> Self::Iter {
         IterCache::iter_range(self, range)
     }
 }
@@ -419,7 +431,7 @@ impl<I: Iterator> Drop for IterCacheInner<I> {
         debug_assert!(self.empty.end <= self.cap);
 
         unsafe {
-            // Drop any filled items at the front.
+            // Drop filled items at front.
             let count = self.empty.start;
             if count > 0 {
                 let ptr = self.ptr.as_ptr();
@@ -427,7 +439,7 @@ impl<I: Iterator> Drop for IterCacheInner<I> {
                 ptr::drop_in_place(slice);
             }
 
-            // Drop any filled items at the back.
+            // Drop filled items at back.
             let count = self.cap - self.empty.end;
             if count > 0 {
                 let ptr = self.ptr.as_ptr().offset(self.empty.end as isize);
@@ -492,7 +504,8 @@ mod test {
                         let f_iter = cache.iter_range(f_range.clone());
 
                         let result = f_iter.map(|item| item.0).collect::<Vec<_>>();
-                        let expected = f_range.collect::<Vec<_>>();
+                        let mut expected = f_range.collect::<Vec<_>>();
+                        // expected.push(1);
 
                         assert_eq!(&result, &expected);
                         thread::sleep(Duration::from_micros(50));
