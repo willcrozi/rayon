@@ -12,19 +12,19 @@ use std::sync::Arc;
 ///
 /// `Args` is intended to be shared (across threads) in order to allow parallel iterator producers
 /// to dynamically split and adjust their contents... TODO
-pub trait Args: Sync + Sized
+pub trait Args<T>: Sync + Sized
 {
-    /// The type of the arguments provided by this `Args`.
-    type Item: Clone;
+    // /// The type of the arguments provided by this `Args`.
+    // type Item: Clone;
 
     /// The type of the iterator provided by this `Args`.
-    type Iter: Iterator<Item=Self::Item>;
+    type Iter: Iterator<Item=T>;
 
     /// The number of arguments provided by this `Args`.
     fn len(&self) -> usize;
 
     /// Returns the argument at position `index`.
-    fn get<'a>(&'a self, index: usize) -> Self::Item;
+    fn get<'a>(&'a self, index: usize) -> T;
 
     /// Returns an iterator over the arguments at the positions within `range`.
     fn iter_range<'a>(&'a self, range: Range<usize>) -> Self::Iter;
@@ -34,6 +34,21 @@ pub trait Args: Sync + Sized
 
 // Let's get this straight:
 // Args _owns_ the items, whether they be moved in structs or moved-in references
+
+// Approach (1)
+//      trait Args {
+//          type Item,
+//          type Iter: Iterator<Item=Self::Item>
+//          fn get<'a>(&'a self, ...) -> &Self::Item;
+//          fn iter<'a>(&'a self, ...) -> ?????
+// NOTE: problem is that to have Iter yield references we need a lifetime on the trait
+
+// Approach (2)
+//      trait Args {
+//          type Item: Clone,
+//          type Iter: Iterator<Item=Self::Item>
+//          fn get(&self, ...) -> Self::Item;
+//          fn iter(&self, ...) -> Self::Iter;
 
 // Scenarios:
 // impl Args for &[T]
@@ -49,12 +64,12 @@ pub trait Args: Sync + Sized
 ////////////////////////////////////////////////////////////////////////////////
 
 /// Represents a partial set of arguments that can be split and 'popped' (in a stack like fashion).
-pub struct PartialArgs<'a, A: Args> {
+pub struct PartialArgs<'a, A: Args<T>, T> {
     args: &'a A,
     range: Range<usize>,
 }
 
-impl<'a, A: Args + Debug> Debug for PartialArgs<'a, A> {
+impl<'a, A: Args<T> + Debug, T> Debug for PartialArgs<'a, A, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PartialArgs")
             .field("args", &self.args)
@@ -63,9 +78,9 @@ impl<'a, A: Args + Debug> Debug for PartialArgs<'a, A> {
     }
 }
 
-impl<'a, A> PartialArgs<'a, A>
+impl<'a, A, T> PartialArgs<'a, A, T>
     where
-        A: Args,
+        A: Args<T>,
         A::Item: Clone,
 {
     /// Returns the number of arguments contained.
@@ -74,7 +89,7 @@ impl<'a, A> PartialArgs<'a, A>
 
     // TODO maybe implement try_pop...
     /// Removes the first argument and returns it.
-    pub fn pop(&mut self) -> A::Item {
+    pub fn pop(&mut self) -> T {
         debug_assert!(self.len() > 1);
 
         let index = self.range.start;
@@ -95,11 +110,11 @@ impl<'a, A> PartialArgs<'a, A>
     }
 }
 
-impl<'a, A: Args> IntoIterator for PartialArgs<'a, A>
-    where
-        A::Item: Clone,
+impl<'a, A: Args<T>, T> IntoIterator for PartialArgs<'a, A, T>
+    // where
+    //     A::Item: Clone,
 {
-    type Item = A::Item;
+    type Item = T;
     type IntoIter = A::Iter;
 
     fn into_iter(self) -> Self::IntoIter {
@@ -114,14 +129,13 @@ impl<'a, A: Args> IntoIterator for PartialArgs<'a, A>
 /// A slice of arguments.
 pub struct SliceArgs<'a, T>(&'a [T]);
 
-impl<'a, A: Args + Debug> Debug for SliceArgs<'a, A> {
+impl<'a, T: Debug> Debug for SliceArgs<'a, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_tuple("SliceArgs").finish()
     }
 }
 
-impl<'a, T: Sync + Clone> Args for SliceArgs<'a, T> {
-    type Item = &'a T;
+impl<'a, T: Sync + Clone> Args<T> for SliceArgs<'a, T> {
     type Iter = slice::Iter<'a, T>;
 
     #[inline]
@@ -246,7 +260,7 @@ impl<I> IterCache<I>
     }
 }
 
-impl<'a, I> Args for &'a IterCache<I>
+impl<'a, I> Args for IterCache<I>
 where
     I: ExactSizeIterator + DoubleEndedIterator,
     I::Item: Sync,
