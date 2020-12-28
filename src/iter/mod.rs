@@ -193,8 +193,8 @@ pub use self::{
 
 mod step_by;
 
-//mod flat_map_args;
-//pub use self::flat_map_args::FlatMapExact;
+mod flat_map_args;
+pub use self::flat_map_args::FlatMapExact;
 
 mod util;
 pub use self::util::{Args, PartialArgs, SliceArgs, IterCache};
