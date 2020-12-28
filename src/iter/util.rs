@@ -13,10 +13,9 @@ use std::marker::PhantomData;
 ///
 /// `Args` is intended to be shared (across threads) in order to allow parallel iterator producers
 /// to dynamically split and adjust their contents... TODO
-pub trait Args: Sync + Sized
-{
+pub trait Args<'a> {
     /// The type of the arguments provided by this `Args`.
-    type Item: Clone;
+    type Item;
 
     /// The type of the iterator provided by this `Args`.
     type Iter: Iterator<Item=Self::Item>;
@@ -25,10 +24,10 @@ pub trait Args: Sync + Sized
     fn len(&self) -> usize;
 
     /// Returns the argument at position `index`.
-    fn get(&self, index: usize) -> Self::Item;
+    fn get(&'a self, index: usize) -> Self::Item;
 
     /// Returns an iterator over the arguments at the positions within `range`.
-    fn iter_range(&self, range: Range<usize>) -> Self::Iter;
+    fn iter_range(&'a self, range: Range<usize>) -> Self::Iter;
 }
 
 // TODO maybe default iter type that is used by a default impl. of iter_range (and full iter method?)
@@ -65,12 +64,12 @@ pub trait Args: Sync + Sized
 ////////////////////////////////////////////////////////////////////////////////
 
 /// Represents a partial set of arguments that can be split and 'popped' (in a stack like fashion).
-pub struct PartialArgs<'a, A: Args> {
+pub struct PartialArgs<'a, A: Args<'a>> {
     args: &'a A,
     range: Range<usize>,
 }
 
-impl<'a, A: Args + Debug> Debug for PartialArgs<'a, A> {
+impl<'a, A: Args<'a> + Debug> Debug for PartialArgs<'a, A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PartialArgs")
             .field("args", &self.args)
@@ -80,9 +79,9 @@ impl<'a, A: Args + Debug> Debug for PartialArgs<'a, A> {
 }
 
 impl<'a, A> PartialArgs<'a, A>
-    where
-        A: Args,
-        A::Item: Clone,
+where
+    A: Args<'a>,
+    A::Item: Clone,
 {
     /// Returns the number of arguments contained.
     #[inline]
@@ -96,7 +95,7 @@ impl<'a, A> PartialArgs<'a, A>
         let index = self.range.start;
         self.range.start += 1;
 
-        self.args.get(index).clone()
+        self.args.get(index)
     }
 
     /// Splits this set of partial arguments into left and right halves at the position `index`.
@@ -111,10 +110,7 @@ impl<'a, A> PartialArgs<'a, A>
     }
 }
 
-impl<'a, A: Args> IntoIterator for PartialArgs<'a, A>
-    where
-        A::Item: Clone,
-{
+impl<'a, A: Args<'a>> IntoIterator for PartialArgs<'a, A> {
     type Item = A::Item;
     type IntoIter = A::Iter;
 
@@ -136,7 +132,7 @@ impl<'a, T: Debug> Debug for SliceArgs<'a, T> {
     }
 }
 
-impl<'a, T: Sync + Clone> Args for SliceArgs<'a, T> {
+impl<'a, T> Args<'a> for SliceArgs<'a, T> {
     type Item = &'a T;
     type Iter = slice::Iter<'a, T>;
 
@@ -263,10 +259,9 @@ impl<'a, I> IterCache<'a, I>
     }
 }
 
-impl<'a, I> Args for IterCache<'a, I>
+impl<'a, I> Args<'a> for IterCache<'a, I>
 where
     I: ExactSizeIterator + DoubleEndedIterator,
-    I::Item: Sync,
 {
     type Item = &'a I::Item;
     type Iter = slice::Iter<'a, I::Item>;
@@ -275,11 +270,11 @@ where
         IterCache::len(self)
     }
 
-    fn get(&self, index: usize) -> Self::Item {
+    fn get(&'a self, index: usize) -> Self::Item {
         IterCache::get(self, index)
     }
 
-    fn iter_range(&self, range: Range<usize>) -> Self::Iter {
+    fn iter_range(&'a self, range: Range<usize>) -> Self::Iter {
         IterCache::iter_range(self, range)
     }
 }
