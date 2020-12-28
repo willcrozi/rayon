@@ -6,28 +6,29 @@ use std::ops::Range;
 use std::alloc::{self, Layout};
 use std::ptr::{self, NonNull};
 use std::sync::Arc;
+use std::marker::PhantomData;
 
 // TODO rename Args: it's not specific to arguments!
 /// A trait representing a list of arguments.
 ///
 /// `Args` is intended to be shared (across threads) in order to allow parallel iterator producers
 /// to dynamically split and adjust their contents... TODO
-pub trait Args<T>: Sync + Sized
+pub trait Args: Sync + Sized
 {
-    // /// The type of the arguments provided by this `Args`.
-    // type Item: Clone;
+    /// The type of the arguments provided by this `Args`.
+    type Item: Clone;
 
     /// The type of the iterator provided by this `Args`.
-    type Iter: Iterator<Item=T>;
+    type Iter: Iterator<Item=Self::Item>;
 
     /// The number of arguments provided by this `Args`.
     fn len(&self) -> usize;
 
     /// Returns the argument at position `index`.
-    fn get<'a>(&'a self, index: usize) -> T;
+    fn get(&self, index: usize) -> Self::Item;
 
     /// Returns an iterator over the arguments at the positions within `range`.
-    fn iter_range<'a>(&'a self, range: Range<usize>) -> Self::Iter;
+    fn iter_range(&self, range: Range<usize>) -> Self::Iter;
 }
 
 // TODO maybe default iter type that is used by a default impl. of iter_range (and full iter method?)
@@ -64,12 +65,12 @@ pub trait Args<T>: Sync + Sized
 ////////////////////////////////////////////////////////////////////////////////
 
 /// Represents a partial set of arguments that can be split and 'popped' (in a stack like fashion).
-pub struct PartialArgs<'a, A: Args<T>, T> {
+pub struct PartialArgs<'a, A: Args> {
     args: &'a A,
     range: Range<usize>,
 }
 
-impl<'a, A: Args<T> + Debug, T> Debug for PartialArgs<'a, A, T> {
+impl<'a, A: Args + Debug> Debug for PartialArgs<'a, A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PartialArgs")
             .field("args", &self.args)
@@ -78,9 +79,9 @@ impl<'a, A: Args<T> + Debug, T> Debug for PartialArgs<'a, A, T> {
     }
 }
 
-impl<'a, A, T> PartialArgs<'a, A, T>
+impl<'a, A> PartialArgs<'a, A>
     where
-        A: Args<T>,
+        A: Args,
         A::Item: Clone,
 {
     /// Returns the number of arguments contained.
@@ -89,7 +90,7 @@ impl<'a, A, T> PartialArgs<'a, A, T>
 
     // TODO maybe implement try_pop...
     /// Removes the first argument and returns it.
-    pub fn pop(&mut self) -> T {
+    pub fn pop(&mut self) -> A::Item {
         debug_assert!(self.len() > 1);
 
         let index = self.range.start;
@@ -110,11 +111,11 @@ impl<'a, A, T> PartialArgs<'a, A, T>
     }
 }
 
-impl<'a, A: Args<T>, T> IntoIterator for PartialArgs<'a, A, T>
-    // where
-    //     A::Item: Clone,
+impl<'a, A: Args> IntoIterator for PartialArgs<'a, A>
+    where
+        A::Item: Clone,
 {
-    type Item = T;
+    type Item = A::Item;
     type IntoIter = A::Iter;
 
     fn into_iter(self) -> Self::IntoIter {
@@ -135,7 +136,8 @@ impl<'a, T: Debug> Debug for SliceArgs<'a, T> {
     }
 }
 
-impl<'a, T: Sync + Clone> Args<T> for SliceArgs<'a, T> {
+impl<'a, T: Sync + Clone> Args for SliceArgs<'a, T> {
+    type Item = &'a T;
     type Iter = slice::Iter<'a, T>;
 
     #[inline]
@@ -158,21 +160,22 @@ impl<'a, T: Sync + Clone> Args<T> for SliceArgs<'a, T> {
 /// Optimised for reads. Currently allocates the its entire storage requirement on the first
 /// read request.
 #[derive(Clone, Debug)]
-pub struct IterCache<I: Iterator> {
+pub struct IterCache<'a, I: Iterator> {
     len: usize,
     inner: Arc<ShardedLock<IterCacheInner<I>>>,
+    _marker: PhantomData<&'a I::Item>,
 }
 
-impl<I> IterCache<I>
+impl<'a, I> IterCache<'a, I>
     where
         I: ExactSizeIterator + DoubleEndedIterator,
 {
     /// Create a new `IterCache` with `iter` as its base iterator.
-    pub fn new(iter: I) -> IterCache<I> {
+    pub fn new(iter: I) -> IterCache<'a, I> {
         let len = iter.len();
         let inner = IterCacheInner::new(iter);
 
-        IterCache { len, inner: Arc::new(ShardedLock::new(inner)) }
+        IterCache { len, inner: Arc::new(ShardedLock::new(inner)), _marker: PhantomData }
     }
 
     /// Returns the length of this cache (equal to the length of its base iterator at construction).
@@ -260,7 +263,7 @@ impl<I> IterCache<I>
     }
 }
 
-impl<'a, I> Args for IterCache<I>
+impl<'a, I> Args for IterCache<'a, I>
 where
     I: ExactSizeIterator + DoubleEndedIterator,
     I::Item: Sync,
@@ -281,7 +284,7 @@ where
     }
 }
 
-// NOTE: Not possible it seems.
+// NOTE: This would be nice but it seems there's no feasible way to achieve this.
 // impl<I, Idx> ops::Index<Idx> for IterCache<I>
 // where
 //     Idx: slice::SliceIndex<[I::Item]>
@@ -295,8 +298,9 @@ where
 //         // This would be misleading and not acceptable for an operation involving slice notation.
 //         // The reason is the Index trait is opaque to us with regards numerical indexes. All we
 //         // know is that it can select an item/sub-slice when given a slice. This means we cannot
-//         // check and fill the necessary indexes, our only choice would be to create the slice
-//         // for the cache in order
+//         // check and fill the necessary indexes, we would have to create the entire slice
+//         // (meaning filling all items) even for a requested range that is a small fraction of the
+//         // length.
 //
 //         // We can't implement SliceIndex ourselves as we would conflict with std's implementation
 //         // due to orphan rules.
@@ -581,7 +585,7 @@ mod test {
     // testing.
     fn test_iter_cache<I, F>(iter: I, test_op: F)
         where I: ExactSizeIterator + DoubleEndedIterator + Clone,
-              F: Fn(&IterCache<BaseIter<I>>)
+              F: Fn(&IterCache<'_, BaseIter<I>>)
     {
         CREATE_COUNT.store(0, Ordering::SeqCst);
         DROP_COUNT.store(0, Ordering::SeqCst);
