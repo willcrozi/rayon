@@ -6,7 +6,6 @@ use std::ops::Range;
 use std::alloc::{self, Layout};
 use std::ptr::{self, NonNull};
 use std::sync::Arc;
-use std::marker::PhantomData;
 
 // TODO rename Args: it's not specific to arguments!
 /// A trait representing a list of arguments.
@@ -15,16 +14,16 @@ use std::marker::PhantomData;
 /// to dynamically split and adjust their contents... TODO
 pub trait Args<'a> {
     /// The type of the arguments provided by this `Args`.
-    type Item;
+    type Item: 'a;
 
     /// The type of the iterator provided by this `Args`.
-    type Iter: Iterator<Item=Self::Item>;
+    type Iter: Iterator<Item=&'a Self::Item>;
 
     /// The number of arguments provided by this `Args`.
     fn len(&self) -> usize;
 
     /// Returns the argument at position `index`.
-    fn get(&'a self, index: usize) -> Self::Item;
+    fn get(&'a self, index: usize) -> &'a Self::Item;
 
     /// Returns an iterator over the arguments at the positions within `range`.
     fn iter_range(&'a self, range: Range<usize>) -> Self::Iter;
@@ -89,7 +88,7 @@ where
 
     // TODO maybe implement try_pop...
     /// Removes the first argument and returns it.
-    pub fn pop(&mut self) -> A::Item {
+    pub fn pop(&mut self) -> &'a A::Item {
         debug_assert!(self.len() > 1);
 
         let index = self.range.start;
@@ -111,7 +110,7 @@ where
 }
 
 impl<'a, A: Args<'a>> IntoIterator for PartialArgs<'a, A> {
-    type Item = A::Item;
+    type Item = &'a A::Item;
     type IntoIter = A::Iter;
 
     fn into_iter(self) -> Self::IntoIter {
@@ -133,17 +132,17 @@ impl<'a, T: Debug> Debug for SliceArgs<'a, T> {
 }
 
 impl<'a, T> Args<'a> for SliceArgs<'a, T> {
-    type Item = &'a T;
+    type Item = T;
     type Iter = slice::Iter<'a, T>;
 
     #[inline]
     fn len(&self) -> usize { self.0.len() }
 
     #[inline]
-    fn get(&self, index: usize) -> Self::Item { &self.0[index] }
+    fn get(&'a self, index: usize) -> &'a Self::Item { &self.0[index] }
 
     #[inline]
-    fn iter_range(&self, range: Range<usize>) -> Self::Iter { self.0[range].iter() }
+    fn iter_range(&'a self, range: Range<usize>) -> Self::Iter { self.0[range].iter() }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -156,22 +155,21 @@ impl<'a, T> Args<'a> for SliceArgs<'a, T> {
 /// Optimised for reads. Currently allocates the its entire storage requirement on the first
 /// read request.
 #[derive(Clone, Debug)]
-pub struct IterCache<'a, I: Iterator> {
+pub struct IterCache<I: Iterator> {
     len: usize,
     inner: Arc<ShardedLock<IterCacheInner<I>>>,
-    _marker: PhantomData<&'a I::Item>,
 }
 
-impl<'a, I> IterCache<'a, I>
+impl<I> IterCache<I>
     where
         I: ExactSizeIterator + DoubleEndedIterator,
 {
     /// Create a new `IterCache` with `iter` as its base iterator.
-    pub fn new(iter: I) -> IterCache<'a, I> {
+    pub fn new(iter: I) -> IterCache<I> {
         let len = iter.len();
         let inner = IterCacheInner::new(iter);
 
-        IterCache { len, inner: Arc::new(ShardedLock::new(inner)), _marker: PhantomData }
+        IterCache { len, inner: Arc::new(ShardedLock::new(inner)) }
     }
 
     /// Returns the length of this cache (equal to the length of its base iterator at construction).
@@ -259,18 +257,19 @@ impl<'a, I> IterCache<'a, I>
     }
 }
 
-impl<'a, I> Args<'a> for IterCache<'a, I>
+impl<'a, I> Args<'a> for IterCache<I>
 where
     I: ExactSizeIterator + DoubleEndedIterator,
+    I::Item: 'a,
 {
-    type Item = &'a I::Item;
+    type Item = I::Item;
     type Iter = slice::Iter<'a, I::Item>;
 
     fn len(&self) -> usize {
         IterCache::len(self)
     }
 
-    fn get(&'a self, index: usize) -> Self::Item {
+    fn get(&'a self, index: usize) -> &'a Self::Item {
         IterCache::get(self, index)
     }
 
@@ -517,8 +516,7 @@ mod test {
                         let f_iter = cache.iter_range(f_range.clone());
 
                         let result = f_iter.map(|item| item.0).collect::<Vec<_>>();
-                        let mut expected = f_range.collect::<Vec<_>>();
-                        // expected.push(1);
+                        let expected = f_range.collect::<Vec<_>>();
 
                         assert_eq!(&result, &expected);
                         thread::sleep(Duration::from_micros(50));
@@ -580,7 +578,7 @@ mod test {
     // testing.
     fn test_iter_cache<I, F>(iter: I, test_op: F)
         where I: ExactSizeIterator + DoubleEndedIterator + Clone,
-              F: Fn(&IterCache<'_, BaseIter<I>>)
+              F: Fn(&IterCache<BaseIter<I>>)
     {
         CREATE_COUNT.store(0, Ordering::SeqCst);
         DROP_COUNT.store(0, Ordering::SeqCst);
