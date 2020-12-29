@@ -925,6 +925,11 @@ pub trait ParallelIterator: Sized + Send {
         FlatMapIter::new(self, map_op)
     }
 
+    /// TODO doc
+    fn flat_map_exact<F, A>(self, map_op: F, args: A) -> FlatMapExact<Self, F, A>
+        where Self::Item: Clone,
+              A: for<'a> Args<'a> { flat_map_args::flat_map_exact(self, map_op, args) }
+
     /// An adaptor that flattens parallel-iterable `Item`s into one large iterator.
     ///
     /// See also [`flatten_iter`](#method.flatten_iter).

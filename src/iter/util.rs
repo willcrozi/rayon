@@ -14,7 +14,7 @@ use std::sync::Arc;
 /// to dynamically split and adjust their contents... TODO
 pub trait Args<'a> {
     /// The type of the arguments provided by this `Args`.
-    type Item: 'a;
+    type Item: Clone + 'a;
 
     /// The type of the iterator provided by this `Args`.
     type Iter: Iterator<Item=&'a Self::Item>;
@@ -131,7 +131,7 @@ impl<'a, T: Debug> Debug for SliceArgs<'a, T> {
     }
 }
 
-impl<'a, T> Args<'a> for SliceArgs<'a, T> {
+impl<'a, T: Clone> Args<'a> for SliceArgs<'a, T> {
     type Item = T;
     type Iter = slice::Iter<'a, T>;
 
@@ -260,7 +260,7 @@ impl<I> IterCache<I>
 impl<'a, I> Args<'a> for IterCache<I>
 where
     I: ExactSizeIterator + DoubleEndedIterator,
-    I::Item: 'a,
+    I::Item: Clone + 'a,
 {
     type Item = I::Item;
     type Iter = slice::Iter<'a, I::Item>;
