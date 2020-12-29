@@ -12,7 +12,7 @@ use std::sync::Arc;
 ///
 /// `Args` is intended to be shared (across threads) in order to allow parallel iterator producers
 /// to dynamically split and adjust their contents... TODO
-pub trait Args<'a> {
+pub trait Args<'a>: Sync + Send {
     /// The type of the arguments provided by this `Args`.
     type Item: Clone + 'a;
 
@@ -131,7 +131,7 @@ impl<'a, T: Debug> Debug for SliceArgs<'a, T> {
     }
 }
 
-impl<'a, T: Clone> Args<'a> for SliceArgs<'a, T> {
+impl<'a, T: Clone + Sync> Args<'a> for SliceArgs<'a, T> {
     type Item = T;
     type Iter = slice::Iter<'a, T>;
 
