@@ -15,21 +15,21 @@ use std::ops::Range;
 /// `FlatMapExact` is an iterator...
 #[must_use = "iterator adaptors are lazy and do nothing unless consumed"]
 #[derive(Clone, Debug)]
-pub struct FlatMapExact<'a, I, F, A: Args<'a>> {
+pub struct FlatMapExact<I, F, A> {
     base: I,
     map_op: F,
     args: A,
 }
 
-pub fn flat_map_exact<'a, I, F, A>(base: I, map_op: F, args: A) -> FlatMapExact<'a, I, F, A>
+pub fn flat_map_exact<I, F, A>(base: I, map_op: F, args: A) -> FlatMapExact<I, F, A>
     where I: ParallelIterator,
-          A: Args<'a>, { FlatMapExact { base, map_op, args } }
+          A: for<'a> Args<'a>, { FlatMapExact { base, map_op, args } }
 
-impl<'a, I, F, A, R> ParallelIterator for FlatMapExact<'a, I, F, A>
+impl<I, F, A, R> ParallelIterator for FlatMapExact<I, F, A>
     where I: ParallelIterator,
           I::Item: Clone + Send,
-          A: Args<'a> + Sync + Send,
-          F: Fn(I::Item, A::Item) -> R + Sync + Send,
+          A: for<'a> Args<'a> + Sync + Send,
+          F: Fn(I::Item, <A as Args<'_>>::Item) -> R + Sync + Send,
           R: Send,
 {
     type Item = R;
@@ -49,11 +49,11 @@ impl<'a, I, F, A, R> ParallelIterator for FlatMapExact<'a, I, F, A>
 }
 
 
-impl<'a, I, F, A, R> IndexedParallelIterator for FlatMapExact<'a, I, F, A>
+impl<I, F, A, R> IndexedParallelIterator for FlatMapExact<I, F, A>
     where I: PopParallelIterator,
           I::Item: Clone + Send,
-          F: Fn(I::Item, A::Item) -> R + Sync + Send,
-          A: Args<'a> + Sync + Send,
+          F: Fn(I::Item, <A as Args<'_>>::Item) -> R + Sync + Send,
+          A: for<'a> Args<'a> + Sync + Send,
           R: Send,
 {
     fn drive<C>(self, consumer: C) -> C::Result
@@ -92,7 +92,7 @@ impl<'a, I, F, A, R> IndexedParallelIterator for FlatMapExact<'a, I, F, A>
             len,
         });
 
-        struct Callback<'a, CB, F, A: Args<'a>> {
+        struct Callback<CB, F, A> {
             callback: CB,
             map_op: F,
             args: A,
@@ -100,11 +100,11 @@ impl<'a, I, F, A, R> IndexedParallelIterator for FlatMapExact<'a, I, F, A>
         }
 
         // TODO try using the outer impl type parameters
-        impl<'a, F, T, A, R, CB> PopProducerCallback<T> for Callback<'a, CB, F, A>
+        impl<F, T, A, R, CB> PopProducerCallback<T> for Callback<CB, F, A>
             where CB: ProducerCallback<R>,
-                  F: Fn(T, A::Item) -> R + Sync,
+                  F: Fn(T, <A as Args<'_>>::Item) -> R + Sync,
                   T: Clone + Send,
-                  A: Args<'a> + Sync + 'a,
+                  A: for<'a> Args<'a> + Sync,
                   R: Send,
         {
             type Output = CB::Output;
@@ -119,11 +119,11 @@ impl<'a, I, F, A, R> IndexedParallelIterator for FlatMapExact<'a, I, F, A>
     }
 }
 
-impl<'a, I, F, A, R> PopParallelIterator for FlatMapExact<'a, I, F, A>
+impl<I, F, A, R> PopParallelIterator for FlatMapExact<I, F, A>
     where I: PopParallelIterator,
           I::Item: Clone + Send,
-          F: Fn(I::Item, A::Item) -> R + Sync + Send,
-          A: Args<'a> + Sync + Send,
+          F: Fn(I::Item, <A as Args<'_>>::Item) -> R + Sync + Send,
+          A: for<'a> Args<'a> + Sync + Send,
           R: Send,
 {
     fn with_pop_producer<CB>(self, callback: CB) -> CB::Output
@@ -137,18 +137,18 @@ impl<'a, I, F, A, R> PopParallelIterator for FlatMapExact<'a, I, F, A>
             len,
         });
 
-        struct Callback<'a, CB, F, A: Args<'a>> {
+        struct Callback<CB, F, A> {
             callback: CB,
             map_op: F,
             args: A,
             len: usize,
         }
 
-        impl<'a, F, T, A, R, CB> PopProducerCallback<T> for Callback<'a, CB, F, A>
+        impl<F, T, A, R, CB> PopProducerCallback<T> for Callback<CB, F, A>
             where CB: PopProducerCallback<R>,
-                  F: Fn(T, A::Item) -> R + Sync,
+                  F: Fn(T, <A as Args<'_>>::Item) -> R + Sync,
                   T: Clone + Send,
-                  A: Args<'a> + Sync,
+                  A: for<'a> Args<'a> + Sync,
                   R: Send,
         {
             type Output = CB::Output;
