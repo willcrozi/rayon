@@ -99,13 +99,11 @@ impl<I, F, A, R> IndexedParallelIterator for FlatMapExact<I, F, A>
             len: usize
         }
 
-        // TODO try using the outer impl type parameters
         impl<F, T, A, R, CB> PopProducerCallback<T> for Callback<CB, F, A>
             where CB: ProducerCallback<R>,
                   F: for<'a> Fn(T, &'a <A as Args<'a>>::Item) -> R + Sync,
                   T: Clone + Send,
                   A: for<'a> Args<'a>,
-                  // for<'a> <A as Args<'a>>::Item: Clone,
                   R: Send,
         {
             type Output = CB::Output;
@@ -180,8 +178,6 @@ struct FlatMapExactProducer<'a, P, F, A>
     len: usize,
 }
 
-
-// impl<'f, P, F, A, R> FlatMapExactProducer<'f, P, F, A>
 impl<'a, P, F, A, R> FlatMapExactProducer<'a, P, F, A>
     where P: PopProducer,
           A: Args<'a>,
@@ -205,7 +201,6 @@ impl<'a, P, F, A, R> Producer for FlatMapExactProducer<'a, P, F, A>
           P::Item: Clone + Send,
           F: Fn(P::Item, &'a A::Item) -> R + Sync,
           A: Args<'a>,
-          // A::Item: Clone,
           R: Send,
 {
     type Item = F::Output;
@@ -221,43 +216,27 @@ impl<'a, P, F, A, R> Producer for FlatMapExactProducer<'a, P, F, A>
         }
     }
 
-    // fn min_len(&self) -> usize {
-    //     // TODO not sure if we should change this to depend on doubling factor and front/back
-    //     self.base.min_len()
-    // }
-    // fn max_len(&self) -> usize {
-    //     // TODO not sure if we should change this to depend on doubling factor and front/back
-    //     self.base.max_len()
-    // }
-
     fn split_at(self, index: usize) -> (Self, Self) {
-        // Working example:
-
-        // Working example:
-        //
-        // Initial logical view of un-split iterator:
-        // logical: [f(1, a1), f(1, a2), f(2, a1), f(2, a2), f(3, a1), f(3, a2),]
-        // state:   () [1, 2, 3] ()
-
-        // Subsequent splits:
-        // logical: [f(1, a1), f(1, a2), f(2, a1)]  [f(2, a2), f(3, a1), f(3, a2),]
-        // state:   () [1] (2, 0..1)                (2, 1..2) [3] ()
-
-        // logical: [f(1, a1)]       [f(1, a2), f(2, a1)]  [f(2, a2), f(3, a1), f(3, a2),]
-        // state:   (1, 0..1) [] ()  (2, 1..2) [3] ()
-
-
         // Implementation notes:
         //
         // Main cases:
         //  * split occurs before base:
-        //
         //  * split occurs within base:
-        //
         //  * split occurs after base:
 
-        // idea:
-        //  * Have Split be an enum: Split(Empty, )
+        // Working example:
+        //
+        // Initialised producer:
+        // logical: [f(1, a1), f(1, a2), f(2, a1), f(2, a2), f(3, a1), f(3, a2),]
+        // state:   () [1, 2, 3] ()
+        //
+        // after split_at(3):
+        // logical: [f(1, a1), f(1, a2), f(2, a1)]  [f(2, a2), f(3, a1), f(3, a2),]
+        // state:   () [1] (2, 0..1)                (2, 1..2) [3] ()
+        //
+        // after left.split_at(1) and right.split_at(5)
+        // logical: [f(1, a1)]       [f(1, a2), f(2, a1)]       [f(2, a2), f(3, a1)]    [f(3, a2),]
+        // state:   (1, 0..1) [] ()  (1, 1..2) [] (2, 0..1)     (2, 1..2) [] (3, 0..1)  (3, 1..2) [] ()
 
         debug_assert!(index <= self.len);
 
@@ -292,9 +271,6 @@ impl<'a, P, F, A, R> Producer for FlatMapExactProducer<'a, P, F, A>
                 // If there is a 'split' base item (i.e. both left and right hand bases need to
                 // produce an item based on a single base item), then we pop it from the right hand
                 // base to allow us to populate it as left's last item and right's first item.
-
-                // If there is an item to be split it will be the first item in the split base's
-                // right hand side.
 
                 let args_len = self.args.len();
 
@@ -339,50 +315,6 @@ impl<'a, P, F, A, R> Producer for FlatMapExactProducer<'a, P, F, A>
 
             }
         }
-        //
-        //
-        //
-        //
-        // // debug_assert!(index <= self.len);
-        //
-        // // Split the base producer at the correct index. If there is a 'split' item it will be
-        // // the first item on the right hand producer.
-        //
-        //
-        // // How many items in after front, i.e. from the index where base items start being used.
-        // let base_offset = if index > front_len { index - front_len } else { index };
-        //
-        // }
-        //
-        // let base_index = if index > front_len
-        //
-        // let base_offset = if index > 0 && self.front.is_some() { index - 1 } else { index };
-        // let base_index = base_offset / 2;
-        // let (left_base, mut right_base) = self.base.split_at(base_index);
-        //
-        // // If there is a 'split' base item (i.e. both left and right hand bases need to produce an
-        // // item based on a single base item), then pop it from the right hand base to allow us to
-        // // populate it as left's last item and right's first item.
-        // let split = base_offset % 2 != 0;
-        // let item = if split { right_base.pop() } else { None };
-        //
-        // let left = FlatMapExactProducer {
-        //     base: left_base,
-        //     map_op: self.map_op,
-        //     front: self.front,
-        //     back: item.clone(),
-        //     // len: index,
-        // };
-        //
-        // let right = FlatMapExactProducer {
-        //     base: right_base,
-        //     map_op: self.map_op,
-        //     front: item,
-        //     back: self.back,
-        //     // len: index,
-        // };
-        //
-        // (left, right)
     }
 
     fn fold_with<G>(self, folder: G) -> G
@@ -428,15 +360,31 @@ impl<'a, P, F, A, R> PopProducer for FlatMapExactProducer<'a, P, F, A>
           R: Send,
 {
     fn try_pop(&mut self) -> Option<Self::Item> {
-        // if let Some(item) = self.front.take() {
-        //     Some((self.map_op)(item))
-        // } else if let Some(item) = self.base.pop() {
-        //     self.front = Some(item.clone());
-        //     Some(item)
-        // } else {
-        //     self.back.take()
-        // }
-        unimplemented!()
+        // Try the front.
+        if let Some(mapped) = self.front.pop_map(self.map_op, self.args) {
+            return Some(mapped);
+        }
+
+        // Front is empty try base producer.
+        if let Some(item) = self.base.try_pop() {
+            // We have to check for empty args list here...
+            if self.args.len() == 0 { return None; }
+
+            // Since we've popped from the base we now need a 'partial' item at the front.
+            self.front = SplitItem::Some(item.clone(), 1..self.args.len());
+
+            let mapped = (self.map_op)(item, self.args.get(0));
+            return Some(mapped);
+        }
+
+        // Base is empty, try the back.
+        if let Some(mapped) = self.back.pop_map(self.map_op, self.args) {
+            Some(mapped)
+        } else {
+            // Producer is empty.
+            None
+        }
+
     }
 }
 
@@ -460,6 +408,31 @@ impl<'a, I, F, A, R> Iterator for FlatMapExactIter<'a, I, F, A>
     type Item = F::Output;
 
     fn next(&mut self) -> Option<Self::Item> {
+        // Try the front.
+        if let Some(mapped) = self.front.pop_map(self.map_op, self.args) {
+            return Some(mapped);
+        }
+
+        // Front is empty try base producer.
+        if let Some(item) = self.base.try_pop() {
+            // We have to check for empty args list here...
+            if self.args.len() == 0 { return None; }
+
+            // Since we've popped from the base we now need a 'partial' item at the front.
+            self.front = SplitItem::Some(item.clone(), 1..self.args.len());
+
+            let mapped = (self.map_op)(item, self.args.get(0));
+            return Some(mapped);
+        }
+
+        // Base is empty, try the back.
+        if let Some(mapped) = self.back.pop_map(self.map_op, self.args) {
+            Some(mapped)
+        } else {
+            // Producer is empty.
+            None
+        }
+
         // // If there is a front item then return its mapped value.
         // if let Some(item) = self.front.take() {
         //     return Some((self.map_op)(item));
@@ -740,7 +713,7 @@ impl<T: Clone> SplitItem<T> {
     fn split_at(mut self, index: usize) -> (Self, Self) {
         match &mut self {
             SplitItem::Some(item, range) => {
-                debug_assert!(0 < index && index <= range.end );
+                debug_assert!(index <= range.end );
 
                 match index {
                     0 => (self, SplitItem::Empty),
@@ -753,10 +726,38 @@ impl<T: Clone> SplitItem<T> {
                 }
             }
             SplitItem::Empty => {
+                // TODO does it even make sense to allow splitting of Empty, should we panic here?
                 debug_assert!(index == 0);
                 (self, SplitItem::Empty)
             }
         }
+    }
+
+    fn pop_map<'a, F, A, R>(&mut self, map_op: &'a F, args: &'a A) -> Option<R>
+    where
+        A: Args<'a>,
+        F: Fn(T, &'a A::Item) -> R,
+    {
+        match self {
+            SplitItem::Some(item, range) => {
+                if range.len() == 0 { return None; }
+                debug_assert!(range.end <= args.len());
+
+                let arg = args.get(range.start);
+                range.start += 1;
+
+                Some(map_op(item.clone(), arg))
+            }
+            SplitItem::Empty => None,
+        }
+    }
+
+    fn iter_map<'a, F, A, R>(self, map_op: &'a F, args: &'a A) -> iter::Map<A::Iter, F>
+    where
+        A: Args<'a>,
+        F: Fn(T, &'a A::Item) -> R,
+    {
+        args.iter_range(self.)
     }
 }
 
