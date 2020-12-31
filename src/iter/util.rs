@@ -17,12 +17,12 @@ pub trait Args<'a>: Sync + Send {
     type Item: Clone + 'a;
 
     /// The type of the iterator provided by this `Args`.
-    type Iter: Iterator<Item=&'a Self::Item>;
+    type Iter: ExactSizeIterator<Item=&'a Self::Item> + DoubleEndedIterator;
 
     /// The number of arguments provided by this `Args`.
     fn len(&self) -> usize;
 
-    /// Returns the argument at position `index`.
+    /// Returns the argument at position `index`. Panics if `index >= self.len()`.
     fn get(&'a self, index: usize) -> &'a Self::Item;
 
     /// Returns an iterator over the arguments at the positions within `range`.
@@ -179,6 +179,7 @@ impl<I> IterCache<I>
     /// Return's a reference to the item at position `index`, internally filling from the base
     /// iterator if required.
     pub fn get(&self, index: usize) -> &I::Item {
+        assert!(index < self.len);
         unsafe {
             let inner = self.fill(&(index..index + 1));
             let ptr = inner.ptr.as_ptr().offset(index as isize);
