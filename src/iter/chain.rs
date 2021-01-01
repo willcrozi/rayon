@@ -223,7 +223,10 @@ impl<A, B> PopProducer for ChainProducer<A, B>
         B: PopProducer<Item=A::Item>,
 {
     fn try_pop(&mut self) -> Option<A::Item> {
-        if self.a_len > 0 { self.a.try_pop() } else { self.b.try_pop() }
+        if self.a_len == 0 { return self.b.try_pop(); }
+
+        self.a_len -= 1;
+        self.a.try_pop()
     }
 }
 
