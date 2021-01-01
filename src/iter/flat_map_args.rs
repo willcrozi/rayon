@@ -101,8 +101,8 @@ impl<I, F, A, R> IndexedParallelIterator for FlatMapExact<I, F, A>
 
         impl<F, T, A, R, CB> PopProducerCallback<T> for Callback<CB, F, A>
             where CB: ProducerCallback<R>,
-                  F: for<'a> Fn(T, &'a <A as Args<'a>>::Item) -> R + Sync,
                   T: Clone + Send,
+                  F: for<'a> Fn(T, &'a <A as Args<'a>>::Item) -> R + Sync,
                   A: for<'a> Args<'a>,
                   R: Send,
         {
@@ -146,8 +146,8 @@ impl<I, F, A, R> PopParallelIterator for FlatMapExact<I, F, A>
 
         impl<F, T, A, R, CB> PopProducerCallback<T> for Callback<CB, F, A>
             where CB: PopProducerCallback<R>,
-                  F: for<'a> Fn(T, &'a <A as Args<'a>>::Item) -> R + Sync,
                   T: Clone + Send,
+                  F: for<'a> Fn(T, &'a <A as Args<'a>>::Item) -> R + Sync,
                   A: for<'a> Args<'a>,
                   R: Send,
         {
@@ -318,12 +318,10 @@ impl<'a, P, F, A, R> Producer for FlatMapExactProducer<'a, P, F, A>
                     None => (None, None)
                 };
 
-
                 (
                     FlatMapExactProducer::new(l_base, self.map_op, self.args.clone(), self.front, l_back, l_len),
                     FlatMapExactProducer::new(r_base, self.map_op, self.args, r_front, None, r_len),
                 )
-
             }
         }
     }
@@ -366,7 +364,6 @@ impl<'a, P, F, A, R> PopProducer for FlatMapExactProducer<'a, P, F, A>
           P::Item: Clone + Send,
           F: Fn(P::Item, &'a A::Item) -> R + Sync,
           A: Args<'a>,
-          // A::Item: Clone,
           R: Send,
 {
     fn try_pop(&mut self) -> Option<Self::Item> {
@@ -404,7 +401,7 @@ impl<'a, P, F, A, R> PopProducer for FlatMapExactProducer<'a, P, F, A>
             }
         };
 
-        // Producer is empty.
+        // Producer empty.
         None
     }
 }
@@ -488,9 +485,8 @@ impl<'a, I, F, A, R> Iterator for FlatMapExactIter<'a, I, F, A>
             let result = front.next().map(|(item, arg)| (self.map_op)(item, arg));
             self.front = Some(front);
 
-            // It is possible (if unlikely) that args.len() == 0, in which case result would
-            // have a value of `Option::None`. This is correct since that is all the the back would
-            // yield anyway.
+            // The only case where `result == None` is when `self.args.len() == 0` which is correct
+            // since in this case we would never yield an item.
             return result;
         } else {
             self.front = None;
@@ -505,7 +501,7 @@ impl<'a, I, F, A, R> Iterator for FlatMapExactIter<'a, I, F, A>
             }
         }
 
-        // Iterator is exhausted
+        // Iterator exhausted
         None
     }
 
@@ -524,19 +520,43 @@ impl<'a, I, F, A, R> DoubleEndedIterator for FlatMapExactIter<'a, I, F, A>
         A: Args<'a>,
 {
     fn next_back(&mut self) -> Option<Self::Item> {
-        // // If there is a back item then return it.
-        // if self.back.is_some() { return self.back.take(); }
-        //
-        // // Otherwise, if there is an item from the base, store a clone at the back and return its
-        // // mapped value.
-        // if let Some(item) = self.base.next_back() {
-        //     self.back = Some(item.clone());
-        //     return Some((self.map_op)(item));
-        // }
-        //
-        // // Otherwise, return the mapped value of any item that may be at the front.
-        // self.back.take().map(self.map_op)
-        unimplemented!()
+        // This is a double-ended iterator and we are iterating from the back here. This means we
+        // replace the back sub-iterator when exhausted and only consume the front sub-iterator once
+        // the base iterator is exhausted.
+
+        // Try the back.
+        if let Some(ref mut back) = self.back {
+            if let Some((item, arg)) = back.next_back() {
+                return Some((self.map_op)(item, arg));
+            }
+        }
+
+        // Try to replenish the back and return the mapping of its first item/arg tuple.
+        if let Some(item) = self.base.next_back() {
+            let mut back = SplitItem(item, 0..self.args.len())
+                .args_iter(self.args);
+
+            let result = back.next_back().map(|(item, arg)| (self.map_op)(item, arg));
+            self.back = Some(back);
+
+            // The only case where `result == None` is when `self.args.len() == 0` which is correct
+            // since in this case we would never yield an item.
+            return result;
+        } else {
+            self.back = None;
+        }
+
+        // Back and base are empty, try the front.
+        if let Some(ref mut front) = self.front {
+            if let Some((item, arg)) = front.next_back() {
+                return Some((self.map_op)(item, arg));
+            } else {
+                self.front = None;
+            }
+        }
+
+        // Iterator exhausted
+        None
     }
 }
 
@@ -721,63 +741,6 @@ impl<'a, C, F, T, A, R> Folder<T> for FlatMapExactFolder<'a, C, F, T, A>
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////////////
-// Dumping ground
-////////////////////////////////////////////////////////////////////////////////////////
-
-// // Owns the mapping operation closure and the arguments. The main purpose of this type is as a
-// // convenient (owning) container for the mapping closure and the arguments, and to reduce
-// // type bounds boilerplate throughout the rayon trait impls.
-// pub struct MapArgs<F, T, A, R>
-//     where F: Fn(T, A::Item) -> R,
-//           A: Args,
-//           T: Clone,
-//           R: Send,
-// {
-//     map_op: F,
-//     args: A,
-//     _marker: PhantomData<(T, R)>
-// }
-//
-// impl<F, T, A, R> MapArgs<F, T, A, R>
-//     where F: Fn(T, A::Item) -> R + Clone,
-//           A: Args,
-//           T: Clone,
-//           R: Send,
-// {
-//     fn map_all<'f>(&'f self, item: T) -> MapArgsIter<'f, F, T, A> {
-//         let args_iter = self.args.iter();
-//         MapArgsIter { map_op: &self.map_op, args_iter, item}
-//     }
-//
-//     fn map_range<'f>(&'f self, item: T, range: Range<usize>) -> MapArgsIter<'f, F, T, A> {
-//         let args_iter = self.args.iter_range(range);
-//         MapArgsIter { map_op: &self.map_op, args_iter, item}
-//     }
-// }
-//
-// pub struct MapArgsIter<'f, F, T, A>
-//     where A: Args,
-//           T: Clone,
-// {
-//     map_op: &'f F,
-//     args_iter: A::Iter,
-//     item: T,
-// }
-//
-// impl<'f, F, T, A, R> Iterator for MapArgsIter<'f, F, T, A>
-//     where F: Fn(T, A::Item) -> R,
-//           A: Args,
-//           T: Clone,
-// {
-//     type Item = R;
-//
-//     fn next(&mut self) -> Option<Self::Item> {
-//         self.args_iter.next()
-//             .map(|arg| (self.map_op)(self.item.clone(), arg))
-//     }
-// }
-
 // TODO this is a shit name, please rename!
 struct SplitItem<T>(T, Range<usize>);
 
@@ -846,44 +809,3 @@ impl<'a, T: Clone, A: Args<'a>> DoubleEndedIterator for ArgsIter<'a, T, A> {
             .map(|arg| (self.item.clone(), arg))
     }
 }
-
-
-// trait Split<T>
-//     where Self: Sized,
-// {
-//     fn len(&self) -> usize;
-//
-//     fn split_at(self, index: usize) -> (Self, Self);
-// }
-//
-// impl<T: Clone> Split<T> for Option<(T, Range<usize>)>{
-//     fn len(&self) -> usize {
-//         match self {
-//             Some((_, range)) => range.len(),
-//             None => 0,
-//         }
-//     }
-//
-//     fn split_at(self, index: usize) -> (Self, Self) {
-//         match self {
-//             Some((item, range)) => {
-//                 debug_assert!(0 < index && index <= range.end );
-//
-//                 let (l_range, r_range) = (range.start..index, index..range.end);
-//
-//                 // Split into left and right sides, avoiding unnecessary cloning.
-//                 if r_range.is_empty() {
-//                     (Some((item, l_range)), None)
-//                 } else if l_range.is_empty() {
-//                     (None, Some((item, r_range)))
-//                 } else {
-//                     (Some((item.clone(), l_range)), Some((item, r_range)))
-//                 }
-//             }
-//             None => {
-//                 debug_assert!(index == 0);
-//                 (None, None)
-//             }
-//         }
-//     }
-// }
