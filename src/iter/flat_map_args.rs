@@ -208,16 +208,7 @@ impl<'a, P, F, A, R> Producer for FlatMapExactProducer<'a, P, F, A>
     type IntoIter = FlatMapExactIter<'a, P::IntoIter, F, A>;
 
     fn into_iter(self) -> Self::IntoIter {
-        let front = self.front.map(|front| front.iter_map(self.map_op, self.args));
-        let back = self.back.map(|back| back.iter_map(self.map_op, self.args));
-
-        FlatMapExactIter {
-            base: self.base.into_iter().fuse(),
-            map_op: self.map_op,
-            args: self.args,
-            front,
-            back,
-        }
+        FlatMapExactIter::new(self.base.into_iter(), self.map_op, self.args, self.front, self.back)
     }
 
     fn split_at(mut self, index: usize) -> (Self, Self) {
@@ -245,7 +236,7 @@ impl<'a, P, F, A, R> Producer for FlatMapExactProducer<'a, P, F, A>
         debug_assert!(index <= self.len);
 
         let front_len = match self.front {
-            Some(front) => front.len(),
+            Some(ref front) => front.len(),
             None => 0,
         };
 
@@ -257,7 +248,7 @@ impl<'a, P, F, A, R> Producer for FlatMapExactProducer<'a, P, F, A>
         if index <= front_len {
             // Split occurs at the front, left base will be empty.
             let (l_base, r_base) = self.base.split_at(0);
-            let (l_front, r_front) = match &mut self.front {
+            let (l_front, r_front) = match self.front {
                 Some(front) => {
                     let (left, right) = front.split_at(index);
                     (Some(left), Some(right))
@@ -272,7 +263,7 @@ impl<'a, P, F, A, R> Producer for FlatMapExactProducer<'a, P, F, A>
 
         } else {
             let back_len = match self.back {
-                Some(back) => back.len(),
+                Some(ref back) => back.len(),
                 None => 0,
             };
 
@@ -282,9 +273,9 @@ impl<'a, P, F, A, R> Producer for FlatMapExactProducer<'a, P, F, A>
             if index <= base_end {
                 // Split occurs 'within' the base producer.
 
-                // If there is a 'split' base item (i.e. both left and right hand bases need to
-                // produce an item based on a single base item), then we pop it from the right hand
-                // base to allow us to populate it as left's last item and right's first item.
+                // If there is a 'split' base item (i.e. both left and right sides need to produce
+                // an item based on a single base item), then we pop it from the right hand base to
+                // allow us to populate it as left's last item and right's first item.
 
                 let args_len = self.args.len();
 
@@ -349,7 +340,6 @@ impl<'a, P, F, A, R> Producer for FlatMapExactProducer<'a, P, F, A>
             front: self.front,
             back: self.back,
         };
-        // self.base.fold_with(folder1).base
 
         // TODO investigate if this is correct here: it would appear that complete() is the place
         //      to consume the rear item, if any, but it appears that the base consumer may assert
@@ -422,13 +412,14 @@ impl<'a, P, F, A, R> PopProducer for FlatMapExactProducer<'a, P, F, A>
 struct FlatMapExactIter<'a, I, F, A>
 where
     I: Iterator,
+    I::Item: Clone,
     A: Args<'a>,
 {
     base: iter::Fuse<I>,
     map_op: &'a F,
     args: &'a A,
-    front: Option<iter::Map<A::Iter, F>>,
-    back: Option<iter::Map<A::Iter, F>>,
+    front: Option<ArgsIter<'a, I::Item, A>>,
+    back: Option<ArgsIter<'a, I::Item, A>>,
 }
 
 impl<'a, I, F, A, R> FlatMapExactIter<'a, I, F, A>
@@ -448,20 +439,21 @@ impl<'a, I, F, A, R> FlatMapExactIter<'a, I, F, A>
         // TODO review if we need Fuse
         let mut base = base.fuse();
 
-        // The front iterator is either the front partial item/args mapping (if present), the first
-        // base item/args mapping, or none.
+        // The front iterator is either the front partial item/args (if present), the first
+        // base item/args, or none.
         let front = match front {
-            Some(front) => Some(front.iter_map(map_op, args)),
+            Some(front) => Some(front.args_iter(args)),
             None => {
                 // This breaks 'pure' laziness but since the producer has likely popped items
                 // already from its base producer, it's not a deal breaker.
                 base.next().map(|item|
-                    SplitItem(item, 0..args.len()).iter_map(map_op, args)
+                    SplitItem(item, 0..args.len())
+                        .args_iter(args)
                 )
             },
         };
 
-        let back = back.map(|back| back.iter_map(map_op, args));
+        let back = back.map(|back| back.args_iter(args));
 
         FlatMapExactIter { base, map_op, args, front, back }
     }
@@ -483,20 +475,22 @@ impl<'a, I, F, A, R> Iterator for FlatMapExactIter<'a, I, F, A>
 
         // Try the front.
         if let Some(ref mut front) = self.front {
-            if let Some(item) = front.next() {
-                return item;
+            if let Some((item, arg)) = front.next() {
+                return Some((self.map_op)(item, arg));
             }
         }
 
-        // Try to replenish the font.
+        // Try to replenish the font and return the mapping of its first item/arg tuple.
         if let Some(item) = self.base.next() {
             let mut front = SplitItem(item, 0..self.args.len())
-                .iter_map(self.map_op, self.args);
-            let result = front.next();
+                .args_iter(self.args);
+
+            let result = front.next().map(|(item, arg)| (self.map_op)(item, arg));
             self.front = Some(front);
 
-            // It is possible (if unlikely) that args.len() == 0, in which case returning
-            // None here is correct since that is all the back would yield anyway.
+            // It is possible (if unlikely) that args.len() == 0, in which case result would
+            // have a value of `Option::None`. This is correct since that is all the the back would
+            // yield anyway.
             return result;
         } else {
             self.front = None;
@@ -504,8 +498,8 @@ impl<'a, I, F, A, R> Iterator for FlatMapExactIter<'a, I, F, A>
 
         // Front and base are empty, try the back.
         if let Some(ref mut back) = self.back {
-            if let Some(item) = back.next() {
-                return Some(item);
+            if let Some((item, arg)) = back.next() {
+                return Some((self.map_op)(item, arg));
             } else {
                 self.back = None;
             }
@@ -581,16 +575,17 @@ impl<'f, C, F, A> FlatMapExactConsumer<'f, C, F, A>{
 impl<'a, C, F, A, T, R> Consumer<T> for FlatMapExactConsumer<'a, C, F, A>
     where C: Consumer<F::Output>,
           F: Fn(T, &'a A::Item) -> R + Sync,
-          // T: Clone,
+          T: Clone,
           A: Args<'a>,
 {
     type Folder = FlatMapExactFolder<'a, C::Folder, F, T, A>;
     type Reducer = C::Reducer;
     type Result = C::Result;
 
+    // NOTE: With a Consumer base is the destination for our elements, caller is the source
     fn split_at(mut self, index: usize) -> (Self, Self, Self::Reducer) {
-        // We'll always feed twice as many items to the base consumer.
-        let base_index = index.checked_mul(2).expect("overflow");
+
+        let base_index = index.checked_mul(self.args.len()).expect("overflow");
         let (left_base, right_base, reducer) = self.base.split_at(base_index);
 
         let right = FlatMapExactConsumer {
@@ -609,8 +604,8 @@ impl<'a, C, F, A, T, R> Consumer<T> for FlatMapExactConsumer<'a, C, F, A>
             base: self.base.into_folder(),
             map_op: self.map_op,
             args: self.args,
-            front: SplitItem::Empty,
-            back: SplitItem::Empty,
+            front: None,
+            back: None,
         }
     }
 
@@ -653,56 +648,68 @@ impl<'a, C, F, T, A, R> Folder<T> for FlatMapExactFolder<'a, C, F, T, A>
     where
         C: Folder<F::Output>,
         F: Fn(T, &'a A::Item) -> R,
-        // T: Clone,
+        T: Clone,
         A: Args<'a>,
 {
     type Result = C::Result;
 
     fn consume(mut self, item: T) -> Self {
-        // // Feeds up to 3 items to base folder: map_op(front), item, map_op(item)
-        //
-        // if let Some(item) = self.front.take() {
-        //     self.base = self.base.consume((self.map_op)(item));
-        //     if self.base.full() { return self; }
-        // }
-        //
-        // self.base = self.base.consume(item.clone());
-        //
-        // if self.base.full() { return self; }
-        // self.base = self.base.consume((self.map_op)(item));
-        //
-        // self
-        unimplemented!()
+        let (map_op, args) = (self.map_op, self.args);
+
+        // Consume the front if present.
+        if let Some(front) = self.front.take() {
+            let iter = front.args_iter(args)
+                .map(|(item, arg)| map_op(item, arg));
+
+            self.base = self.base.consume_iter(iter);
+        }
+
+        // Finish early if base is full.
+        if self.base.full() { return self; }
+
+        // Consume `item`.
+        let args_len = self.args.len();
+        let iter = SplitItem(item, 0..args_len)
+            .args_iter(args)
+            .map(|(item, arg)| map_op(item, arg));
+
+        self.base = self.base.consume_iter(iter);
+
+        // NOTE: `self.back` is consumed by `FlatMapExactProducer::fold_with`.
+
+        self
     }
 
     fn consume_iter<I>(mut self, iter: I) -> Self
         where I: IntoIterator<Item=T>,
     {
-        // if let Some(item) = self.front.take() {
-        //     let mapped = (self.map_op)(item);
-        //     self.base = self.base.consume(mapped);
-        //     if self.base.full() { return self; }
-        // }
-        //
-        // for item in iter.into_iter() {
-        //     self.base = self.base.consume(item.clone());
-        //     if self.base.full() { return self; }
-        //
-        //     let mapped = (self.map_op)(item);
-        //     self.base = self.base.consume(mapped);
-        //     if self.base.full() { return self; }
-        // }
-        //
-        // // TODO investigate if this is correct here: it would appear that complete() is the place
-        // //      to consume the rear item, if any, but it appears that the base consumer may assert
-        // //      the correct length before this gets called.
-        // //      For now the operation is done at <MapInterleaved as Producer>::with_folder()
-        // // if let Some(item) = self.back.take() {
-        // //     self.base = self.base.consume(item);
-        // // }
-        //
-        // self
-        unimplemented!()
+        let (map_op, args) = (self.map_op, self.args);
+
+        // Consume the front if present.
+        if let Some(front) = self.front.take() {
+            let iter = front.args_iter(args)
+                .map(|(item, arg)| map_op(item, arg));
+
+            self.base = self.base.consume_iter(iter);
+        }
+
+        // Finish early if base is full.
+        if self.base.full() { return self; }
+
+        // Consume `iter`.
+        let args_len = self.args.len();
+        let iter = iter.into_iter()
+            .flat_map(|item| {
+                SplitItem(item, 0..args_len)
+                    .args_iter(args)
+                    .map(|(item, arg)| map_op(item, arg))
+        });
+
+        self.base = self.base.consume_iter(iter);
+
+        // NOTE: `self.back` is consumed by `FlatMapExactProducer::fold_with`.
+
+        self
     }
 
     fn complete(self) -> C::Result {
@@ -771,6 +778,7 @@ impl<'a, C, F, T, A, R> Folder<T> for FlatMapExactFolder<'a, C, F, T, A>
 //     }
 // }
 
+// TODO this is a shit name, please rename!
 struct SplitItem<T>(T, Range<usize>);
 
 impl<T: Clone> SplitItem<T> {
@@ -788,6 +796,7 @@ impl<T: Clone> SplitItem<T> {
         )
     }
 
+    // TODO maybe remove the map aspect of this method
     fn pop_map<'a, F, A, R>(&mut self, map_op: &'a F, args: &'a A) -> Option<R>
     where
         A: Args<'a>,
@@ -806,14 +815,35 @@ impl<T: Clone> SplitItem<T> {
         Some(map_op(item.clone(), arg))
     }
 
-    fn iter_map<'a, F, A, R>(self, map_op: &'a F, args: &'a A) -> iter::Map<A::Iter, F>
-    where
-        A: Args<'a>,
-        F: Fn(T, &'a A::Item) -> R,
-    {
-        let SplitItem(item, range) = self;
-        args.iter_range(range)
-            .map(|arg| map_op(item.clone(), arg))
+    fn args_iter<'a, A: Args<'a>>(self, args: &'a A) -> ArgsIter<'a, T, A> {
+        ArgsIter { item: self.0, args: args.iter_range(self.1) }
+    }
+}
+
+// TODO maybe this is redundant and we use Zip<Cycle<T>, A::Iter> directly?
+// TODO rename this as well
+struct ArgsIter<'a, T: Clone, A: Args<'a>> {
+    item: T,
+    args: A::Iter,
+}
+
+impl<'a, T: Clone, A: Args<'a>> Iterator for ArgsIter<'a, T, A> {
+    type Item = (T, &'a A::Item);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.args.next()
+            .map(|arg| (self.item.clone(), arg))
+    }
+}
+
+impl<'a, T: Clone, A: Args<'a>> ExactSizeIterator for ArgsIter<'a, T, A> {
+    fn len(&self) -> usize { self.args.len() }
+}
+
+impl<'a, T: Clone, A: Args<'a>> DoubleEndedIterator for ArgsIter<'a, T, A> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        self.args.next_back()
+            .map(|arg| (self.item.clone(), arg))
     }
 }
 

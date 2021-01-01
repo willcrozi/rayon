@@ -8,6 +8,8 @@ use std::ptr::{self, NonNull};
 use std::sync::Arc;
 
 // TODO rename Args: it's not specific to arguments!
+// TODO look into the relationship between this trait and SplitItem...(which also needs renaming, haha!)
+//      maybe rename SplitItem -> Args and rename this... ArgsSource....
 /// A trait representing a list of arguments.
 ///
 /// `Args` is intended to be shared (across threads) in order to allow parallel iterator producers
