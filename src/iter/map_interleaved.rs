@@ -606,3 +606,72 @@ impl<'f, C, F, T> Folder<T> for MapInterleavedFolder<'f, C, F, T>
         self.base.full()
     }
 }
+
+
+////////////////////////////////////////////////////////////////////////////////
+// Tests
+////////////////////////////////////////////////////////////////////////////////
+
+#[cfg(test)]
+mod test {
+    use crate::iter::{
+        ParallelIterator,
+        IntoParallelIterator,
+        IndexedParallelIterator,
+    };
+
+    /// Helper to set the number of threads used by rayon's threadpool.
+    #[allow(dead_code)]
+    fn set_rayon_threads() {
+        crate::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build_global()
+            .unwrap();
+    }
+
+
+    #[test]
+    fn check_map_interleaved() {
+        // Test using Vec
+        let nums = vec![1, 2, 3];
+        let result = nums.into_par_iter()
+            .map_interleaved(|n| n * 10)
+            .collect::<Vec<_>>();
+
+        assert_eq!(result, vec![1, 10, 2, 20, 3, 30]);
+
+
+        // Test using a range and with skip()
+        let range = 1..6;
+        let skip_count = 1;
+        let par_nums = range.clone().into_par_iter()
+            .map_interleaved(|n| n * 10)
+            .skip(skip_count)
+            .collect::<Vec<_>>();
+
+        let seq_nums = range.clone().into_iter()
+            .flat_map(|n| vec![n, n * 10])
+            .skip(skip_count)
+            .collect::<Vec<_>>();
+
+        assert_eq!(par_nums, seq_nums);
+
+
+        // More thorough skip testing
+        for limit in 0..128 {
+            for skip in 0..=128 {
+                let par_nums = (0..limit).into_par_iter()
+                    .map_interleaved(|n| n * 10)
+                    .skip(skip)
+                    .collect::<Vec<_>>();
+
+                let seq_nums = (0..limit).into_iter()
+                    .flat_map(|n| vec![n, n * 10])
+                    .skip(skip)
+                    .collect::<Vec<_>>();
+
+                assert_eq!(par_nums, seq_nums);
+            }
+        }
+    }
+}

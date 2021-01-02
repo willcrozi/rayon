@@ -197,7 +197,7 @@ mod flat_map_args;
 pub use self::flat_map_args::FlatMapExact;
 
 mod util;
-pub use self::util::{Args, PartialArgs, SliceArgs, IterCache};
+pub use self::util::{Args, PartialArgs, IterCache};
 
 #[cfg(step_by)]
 pub use self::step_by::StepBy;
@@ -878,6 +878,11 @@ pub trait ParallelIterator: Sized + Send {
         FlatMap::new(self, map_op)
     }
 
+    ///...TODO
+    fn flat_map_exact<'a, I, F, A>(self, args: A, map_op: F)  -> FlatMapExact<Self, F, A>
+    where I: ParallelIterator,
+          A: Args<'a> { flat_map_args::flat_map_exact(self, args, map_op)  }
+
     /// Applies `map_op` to each item of this iterator to get nested serial iterators,
     /// producing a new parallel iterator that flattens these back into one.
     ///
@@ -925,10 +930,10 @@ pub trait ParallelIterator: Sized + Send {
         FlatMapIter::new(self, map_op)
     }
 
-    /// TODO doc
-    fn flat_map_exact<F, A>(self, map_op: F, args: A) -> FlatMapExact<Self, F, A>
-        where Self::Item: Clone,
-              A: for<'a> Args<'a> { flat_map_args::flat_map_exact(self, map_op, args) }
+    // /// TODO doc
+    // fn flat_map_exact<F, A>(self, map_op: F, args: A) -> FlatMapExact<Self, F, A>
+    //     where Self::Item: Clone,
+    //           A: for<'a> Args<'a> { flat_map_args::flat_map_exact(self, map_op, args) }
 
     /// An adaptor that flattens parallel-iterable `Item`s into one large iterator.
     ///

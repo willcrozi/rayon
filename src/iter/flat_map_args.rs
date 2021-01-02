@@ -21,9 +21,9 @@ pub struct FlatMapExact<I, F, A> {
     args: A,
 }
 
-pub(crate) fn flat_map_exact<I, F, A>(base: I, map_op: F, args: A) -> FlatMapExact<I, F, A>
+pub(crate) fn flat_map_exact<'a, I, F, A>(base: I, args: A, map_op: F)  -> FlatMapExact<I, F, A>
     where I: ParallelIterator,
-          A: for<'a> Args<'a>, { FlatMapExact { base, map_op, args } }
+          A: Args<'a>, { FlatMapExact { base, map_op, args } }
 
 impl<I, F, A, R> ParallelIterator for FlatMapExact<I, F, A>
     where I: ParallelIterator,
@@ -211,7 +211,7 @@ impl<'a, P, F, A, R> Producer for FlatMapExactProducer<'a, P, F, A>
         FlatMapExactIter::new(self.base.into_iter(), self.map_op, self.args, self.front, self.back)
     }
 
-    fn split_at(mut self, index: usize) -> (Self, Self) {
+    fn split_at(self, index: usize) -> (Self, Self) {
         // Implementation notes:
         //
         // Main cases:
@@ -267,10 +267,10 @@ impl<'a, P, F, A, R> Producer for FlatMapExactProducer<'a, P, F, A>
                 None => 0,
             };
 
-            // First logical index that is past the base.
-            let base_end = self.len - back_len;
+            // Logical index of the start of the back section.
+            let back_start = self.len - back_len;
 
-            if index <= base_end {
+            if index < back_start {
                 // Split occurs 'within' the base producer.
 
                 // If there is a 'split' base item (i.e. both left and right sides need to produce
@@ -280,20 +280,20 @@ impl<'a, P, F, A, R> Producer for FlatMapExactProducer<'a, P, F, A>
                 let args_len = self.args.len();
 
                 // How many logical items 'into' the base is the index.
-                let index_base_offset = index - front_len;
+                let base_index = index - front_len;
 
-                let base_split = index_base_offset / args_len;
+                let base_split = base_index / args_len;
                 let (l_base, mut r_base) = self.base.split_at(base_split);
 
-                // Check for split across an item.
-                let arg_index = index_base_offset % args_len;
-                let (l_back, r_front) = match arg_index {
+                let item_split = base_index % args_len;
+                let (l_back, r_front) = match item_split {
                     0 => (None, None),
                     _ => {
+                        // Split is 'within' a base item.
                         let item = r_base.pop();
                         (
-                            Some(SplitItem(item.clone(), 0..arg_index)),
-                            Some(SplitItem(item, arg_index..args_len))
+                            Some(SplitItem(item.clone(), 0..item_split)),
+                            Some(SplitItem(item, item_split..args_len))
                         )
                     }
                 };
@@ -304,15 +304,15 @@ impl<'a, P, F, A, R> Producer for FlatMapExactProducer<'a, P, F, A>
                 )
 
             } else {
-                debug_assert!(index == self.len);
-
                 // Split occurs within self.back, right base will be empty.
-                let base_len = base_end - front_len;
+                let base_split = back_start - front_len;
+                let back_split = index - back_start;
 
-                let (l_base, r_base) = self.base.split_at(0);
+                let (l_base, r_base) = self.base.split_at(base_split);
                 let (l_back, r_front) = match self.back {
                     Some(back) => {
-                        let (left, right) = back.split_at(index);
+                        debug_assert!(back_split <= back.len());
+                        let (left, right) = back.split_at(back_split);
                         (Some(left), Some(right))
                     }
                     None => (None, None)
@@ -427,7 +427,7 @@ impl<'a, I, F, A, R> FlatMapExactIter<'a, I, F, A>
         A: Args<'a>,
 {
     fn new(
-        mut base: I,
+        base: I,
         map_op: &'a F,
         args: &'a A,
         front: Option<SplitItem<I::Item>>,
@@ -807,5 +807,75 @@ impl<'a, T: Clone, A: Args<'a>> DoubleEndedIterator for ArgsIter<'a, T, A> {
     fn next_back(&mut self) -> Option<Self::Item> {
         self.args.next_back()
             .map(|arg| (self.item.clone(), arg))
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Tests
+////////////////////////////////////////////////////////////////////////////////
+
+#[cfg(test)]
+mod test {
+    use crate::iter::{
+        ParallelIterator,
+        IntoParallelIterator,
+        IndexedParallelIterator,
+    };
+
+    /// Helper to set the number of threads used by rayon's threadpool.
+    #[allow(dead_code)]
+    fn set_rayon_threads() {
+        crate::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build_global()
+            .unwrap();
+    }
+
+
+    #[test]
+    fn check_flat_map_exact() {
+        let multipliers: &[i32] = &[1, 10, 100];
+
+        // Test using Vec
+        let nums = vec![1, 2, 3];
+        let result = nums.into_par_iter()
+            .flat_map_exact(multipliers, |n, m| n * m)
+            .collect::<Vec<_>>();
+
+        assert_eq!(result, vec![1, 10, 100, 2, 20, 200, 3, 30, 300]);
+
+
+        // Test using a range and with skip()
+        let range = 1..6;
+        let skip_count = 1;
+        let par_nums = range.clone().into_par_iter()
+            .map_interleaved(|n| n * 10)
+            .skip(skip_count)
+            .collect::<Vec<_>>();
+
+        let seq_nums = range.clone().into_iter()
+            .flat_map(|n| vec![n, n * 10])
+            .skip(skip_count)
+            .collect::<Vec<_>>();
+
+        assert_eq!(par_nums, seq_nums);
+
+
+        // More thorough skip testing
+        for limit in 0..128 {
+            for skip in 0..=128 {
+                let par_nums = (0..limit).into_par_iter()
+                    .map_interleaved(|n| n * 10)
+                    .skip(skip)
+                    .collect::<Vec<_>>();
+
+                let seq_nums = (0..limit).into_iter()
+                    .flat_map(|n| vec![n, n * 10])
+                    .skip(skip)
+                    .collect::<Vec<_>>();
+
+                assert_eq!(par_nums, seq_nums);
+            }
+        }
     }
 }

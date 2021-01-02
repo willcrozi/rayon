@@ -124,27 +124,27 @@ impl<'a, A: Args<'a>> IntoIterator for PartialArgs<'a, A> {
 // SliceArgs
 ////////////////////////////////////////////////////////////////////////////////
 
-/// A slice of arguments.
-pub struct SliceArgs<'a, T>(&'a [T]);
+// /// A slice of arguments.
+// pub struct SliceArgs<'a, T>(&'a [T]);
+//
+// impl<'a, T: Debug> Debug for SliceArgs<'a, T> {
+//     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+//         f.debug_tuple("SliceArgs").finish()
+//     }
+// }
 
-impl<'a, T: Debug> Debug for SliceArgs<'a, T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("SliceArgs").finish()
-    }
-}
-
-impl<'a, T: Clone + Sync> Args<'a> for SliceArgs<'a, T> {
+impl<'a, T: Clone + Sync+ Send + 'a> Args<'a> for &'a [T] {
     type Item = T;
     type Iter = slice::Iter<'a, T>;
 
     #[inline]
-    fn len(&self) -> usize { self.0.len() }
+    fn len(&self) -> usize { unimplemented!() }
 
     #[inline]
-    fn get(&'a self, index: usize) -> &'a Self::Item { &self.0[index] }
+    fn get(&'a self, index: usize) -> &'a Self::Item { unimplemented!() }
 
     #[inline]
-    fn iter_range(&'a self, range: Range<usize>) -> Self::Iter { self.0[range].iter() }
+    fn iter_range(&'a self, range: Range<usize>) -> Self::Iter { unimplemented!()}
 }
 
 ////////////////////////////////////////////////////////////////////////////////
