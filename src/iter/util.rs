@@ -14,21 +14,18 @@ use std::sync::Arc;
 ///
 /// `Args` is intended to be shared (across threads) in order to allow parallel iterator producers
 /// to dynamically split and adjust their contents... TODO
-pub trait Args<'a>: Sync + Send {
+pub trait Args: Sync + Send {
     /// The type of the arguments provided by this `Args`.
-    type Item: Clone + 'a;
-
-    /// The type of the iterator provided by this `Args`.
-    type Iter: ExactSizeIterator<Item=&'a Self::Item> + DoubleEndedIterator;
+    type Item: Clone;
 
     /// The number of arguments provided by this `Args`.
     fn len(&self) -> usize;
 
-    /// Returns the argument at position `index`. Panics if `index >= self.len()`.
-    fn get(&'a self, index: usize) -> &'a Self::Item;
+    /// Returns the argument at `index`. Panics if `index >= self.len()`.
+    fn get(&self, index: usize) -> &Self::Item;
 
-    /// Returns an iterator over the arguments at the positions within `range`.
-    fn iter_range(&'a self, range: Range<usize>) -> Self::Iter;
+    /// Returns an `Option` wrapping the argument at `index`, or `None` if `index >= self.len()`.
+    fn try_get(&self, index: usize) -> Option<&Self::Item>;
 }
 
 // TODO maybe default iter type that is used by a default impl. of iter_range (and full iter method?)
@@ -59,92 +56,19 @@ pub trait Args<'a>: Sync + Send {
 // Item: &T
 
 
-
-////////////////////////////////////////////////////////////////////////////////
-// PartialArgs
-////////////////////////////////////////////////////////////////////////////////
-
-/// Represents a partial set of arguments that can be split and 'popped' (in a stack like fashion).
-pub struct PartialArgs<'a, A: Args<'a>> {
-    args: &'a A,
-    range: Range<usize>,
-}
-
-impl<'a, A: Args<'a> + Debug> Debug for PartialArgs<'a, A> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("PartialArgs")
-            .field("args", &self.args)
-            .field("range", &self.range)
-            .finish()
-    }
-}
-
-impl<'a, A> PartialArgs<'a, A>
-where
-    A: Args<'a>,
-    A::Item: Clone,
-{
-    /// Returns the number of arguments contained.
-    #[inline]
-    pub fn len(&self) -> usize { self.range.len() }
-
-    // TODO maybe implement try_pop...
-    /// Removes the first argument and returns it.
-    pub fn pop(&mut self) -> &'a A::Item {
-        debug_assert!(self.len() > 1);
-
-        let index = self.range.start;
-        self.range.start += 1;
-
-        self.args.get(index)
-    }
-
-    /// Splits this set of partial arguments into left and right halves at the position `index`.
-    pub fn split_at(&mut self, index: usize) -> (Self, Self) {
-        debug_assert!(self.len() >= index);
-        let split = self.range.start + index;
-
-        (
-            PartialArgs { args: self.args, range: self.range.start..split },
-            PartialArgs { args: self.args, range: split..self.range.end },
-        )
-    }
-}
-
-impl<'a, A: Args<'a>> IntoIterator for PartialArgs<'a, A> {
-    type Item = &'a A::Item;
-    type IntoIter = A::Iter;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.args.iter_range(self.range)
-    }
-}
-
-////////////////////////////////////////////////////////////////////////////////
-// SliceArgs
-////////////////////////////////////////////////////////////////////////////////
-
-// /// A slice of arguments.
-// pub struct SliceArgs<'a, T>(&'a [T]);
-//
-// impl<'a, T: Debug> Debug for SliceArgs<'a, T> {
-//     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-//         f.debug_tuple("SliceArgs").finish()
-//     }
-// }
-
-impl<'a, T: Clone + Sync+ Send + 'a> Args<'a> for &'a [T] {
+impl<'a, T: Clone + Sync+ Send + 'a> Args for &'a [T] {
     type Item = T;
-    type Iter = slice::Iter<'a, T>;
 
     #[inline]
-    fn len(&self) -> usize { unimplemented!() }
+    fn len(&self) -> usize { <[T]>::len(&self) }
 
     #[inline]
-    fn get(&'a self, index: usize) -> &'a Self::Item { unimplemented!() }
+    fn get(&self, index: usize) -> &Self::Item { &self[index] }
 
     #[inline]
-    fn iter_range(&'a self, range: Range<usize>) -> Self::Iter { unimplemented!()}
+    fn try_get(&self, index: usize) -> Option<&Self::Item> {
+        if index < <[T]>::len(&self) { Some(&self[index]) } else { None }
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -182,10 +106,22 @@ impl<I> IterCache<I>
     /// iterator if required.
     pub fn get(&self, index: usize) -> &I::Item {
         assert!(index < self.len);
-        unsafe {
-            let inner = self.fill(&(index..index + 1));
-            let ptr = inner.ptr.as_ptr().offset(index as isize);
-            &*ptr
+        unsafe { self.get_unchecked(index) }
+    }
+
+    ///...TODO
+    pub unsafe fn get_unchecked(&self, index: usize) -> &I::Item {
+        let inner = self.fill(&(index..index + 1));
+        let ptr = inner.ptr.as_ptr().offset(index as isize);
+        &*ptr
+    }
+
+    ///...TODO
+    pub fn try_get(&self, index: usize) -> Option<&I::Item> {
+        if index < self.len {
+            unsafe { Some(self.get_unchecked(index)) }
+        } else {
+            None
         }
     }
 
@@ -260,24 +196,23 @@ impl<I> IterCache<I>
     }
 }
 
-impl<'a, I> Args<'a> for IterCache<I>
+impl<I> Args for IterCache<I>
 where
     I: ExactSizeIterator + DoubleEndedIterator,
-    I::Item: Clone + 'a,
+    I::Item: Clone,
 {
     type Item = I::Item;
-    type Iter = slice::Iter<'a, I::Item>;
 
     fn len(&self) -> usize {
         IterCache::len(self)
     }
 
-    fn get(&'a self, index: usize) -> &'a Self::Item {
+    fn get(&self, index: usize) -> &Self::Item {
         IterCache::get(self, index)
     }
 
-    fn iter_range(&'a self, range: Range<usize>) -> Self::Iter {
-        IterCache::iter_range(self, range)
+    fn try_get(&self, index: usize) -> Option<&Self::Item> {
+        IterCache::try_get(self, index)
     }
 }
 
