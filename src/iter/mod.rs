@@ -127,7 +127,7 @@ mod interleave_shortest;
 mod intersperse;
 mod len;
 mod map;
-mod map_interleaved;
+mod map_interleave;
 mod map_with;
 mod multizip;
 mod noop;
@@ -172,7 +172,7 @@ pub use self::{
     intersperse::Intersperse,
     len::{MaxLen, MinLen},
     map::Map,
-    map_interleaved::MapInterleaved,
+    map_interleave::MapInterleave,
     map_with::{MapInit, MapWith},
     multizip::MultiZip,
     once::{once, Once},
@@ -598,7 +598,7 @@ pub trait ParallelIterator: Sized + Send {
         Map::new(self, map_op)
     }
 
-    /// `MapInterleaved` is an iterator that interleaves an iterators items
+    /// `MapInterleave` is an iterator that interleaves an iterators items
     /// with the result of applying a map operation to each item.
     ///
     /// # Examples
@@ -606,14 +606,14 @@ pub trait ParallelIterator: Sized + Send {
     /// ```
     /// use rayon::prelude::*;
     ///
-    /// let mut par_iter = (1..4).into_par_iter().map_interleaved(|x| x * 2);
+    /// let mut par_iter = (1..4).into_par_iter().map_interleave(|x| x * 2);
     ///
-    /// let interleaved: Vec<_> = par_iter.collect();
+    /// let interleave: Vec<_> = par_iter.collect();
     ///
-    /// assert_eq!(&interleaved[..], &[1, 2, 2, 4, 3, 6]);
+    /// assert_eq!(&interleave[..], &[1, 2, 2, 4, 3, 6]);
     /// ```
-    fn map_interleaved<F>(self, map_op: F) -> MapInterleaved<Self, F> {
-        MapInterleaved::new(self, map_op)
+    fn map_interleave<F>(self, map_op: F) -> MapInterleave<Self, F> {
+        map_interleave::map_interleave(self, map_op)
     }
 
     /// Applies `map_op` to the given `init` value with each item of this
@@ -878,7 +878,25 @@ pub trait ParallelIterator: Sized + Send {
         FlatMap::new(self, map_op)
     }
 
-    ///...TODO
+    /// Applies `map_op` to each item of this iterator together, in turn, with each item in `args`.
+    /// Since `args` has a known length `FlatMapExact` implements `IndexedParallelIterator` when
+    /// its base iterator does, allowing parallel iterator adapters such as `Skip` to be used.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rayon::prelude::*;
+    ///
+    /// let multipliers: &[usize] = &[1, 10, 100];
+    /// let nums = vec![1, 2, 3];
+    ///
+    /// let result = nums.into_par_iter()
+    ///     .flat_map_exact(multipliers, |n, m| n * m)
+    ///     .skip(3)
+    ///     .collect::<Vec<_>>();
+    ///
+    /// assert_eq!(result, vec![2, 20, 200, 3, 30, 300]);
+    /// ```
     fn flat_map_exact<F, A, R>(self, args: A, map_op: F)  -> FlatMapExact<Self, F, A>
     where
         F: Fn(<Self as ParallelIterator>::Item, &<A as ArgSource>::Item) -> R + Sync + Send,

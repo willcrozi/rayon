@@ -21,11 +21,11 @@ pub struct FlatMapExact<I, F, A> {
     args: A,
 }
 
-pub(crate) fn flat_map_exact<'a, I, F, A, R>(base: I, args: A, map_op: F)  -> FlatMapExact<I, F, A>
+pub(crate) fn flat_map_exact<I, F, A, R>(base: I, args: A, map_op: F)  -> FlatMapExact<I, F, A>
 where
     I: ParallelIterator,
     F: Fn(I::Item, &A::Item) -> R + Sync + Send,
-    A: ArgSource, A::Item: 'a { FlatMapExact { base, map_op, args } }
+    A: ArgSource { FlatMapExact { base, map_op, args } }
 
 impl<I, F, A, R> ParallelIterator for FlatMapExact<I, F, A>
 where I: ParallelIterator,
@@ -831,7 +831,7 @@ mod test {
         IndexedParallelIterator,
     };
 
-    /// Helper to set the number of threads used by rayon's threadpool.
+    /// Helper to set the number of threads used by rayon's thread-pool.
     #[allow(dead_code)]
     fn set_rayon_threads() {
         crate::ThreadPoolBuilder::new()
@@ -845,14 +845,7 @@ mod test {
     fn check_flat_map_exact() {
         let multipliers: &[usize] = &[1, 10, 100];
 
-        // Test using Vec
-        let nums = vec![1, 2, 3];
-        let result = nums.into_par_iter()
-            .flat_map_exact(multipliers, |n, m| n * m)
-            .collect::<Vec<_>>();
-        assert_eq!(result, vec![1, 10, 100, 2, 20, 200, 3, 30, 300]);
-
-        // More thorough checks with skip/take.
+        // For each input length try all possible 'skip' and 'take' counts.
         for base_len in 0..16 {
             let len = base_len * multipliers.len();
             for skip in 0..=len {

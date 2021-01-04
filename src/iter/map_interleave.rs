@@ -43,18 +43,16 @@ use std::iter::FusedIterator;
 /// operation to each item.
 #[must_use = "iterator adaptors are lazy and do nothing unless consumed"]
 #[derive(Clone, Debug)]
-pub struct MapInterleaved<I, F> {
+pub struct MapInterleave<I, F> {
     base: I,
     map_op: F,
 }
 
-impl<I, F> MapInterleaved<I, F> {
-    pub(super) fn new(base: I, map_op: F) -> Self {
-        MapInterleaved { base, map_op }
-    }
+pub(crate) fn map_interleave<I, F>(base: I, map_op: F) -> MapInterleave<I, F> {
+    MapInterleave { base, map_op }
 }
 
-impl<I, F> ParallelIterator for MapInterleaved<I, F>
+impl<I, F> ParallelIterator for MapInterleave<I, F>
     where
         I: ParallelIterator,
         F: Fn(I::Item) -> I::Item + Sync + Send,
@@ -78,7 +76,7 @@ impl<I, F> ParallelIterator for MapInterleaved<I, F>
     }
 }
 
-impl<I, F> IndexedParallelIterator for MapInterleaved<I, F>
+impl<I, F> IndexedParallelIterator for MapInterleave<I, F>
     where
         I: PopParallelIterator,
         I::Item: Clone + Send,
@@ -147,7 +145,7 @@ impl<I, F> IndexedParallelIterator for MapInterleaved<I, F>
     }
 }
 
-impl<I, F> PopParallelIterator for MapInterleaved<I, F>
+impl<I, F> PopParallelIterator for MapInterleave<I, F>
     where I: PopParallelIterator,
           I::Item: Clone + Send,
           F: Fn(I::Item) -> I::Item + Sync + Send,
@@ -225,15 +223,6 @@ impl<'f, P, F> Producer for MapInterleavedProducer<'f, P, F>
             back: self.back,
         }
     }
-
-    // fn min_len(&self) -> usize {
-    //     // TODO benchmark values of this, starting with 2
-    //     self.base.min_len()
-    // }
-    // fn max_len(&self) -> usize {
-    //     // TODO benchmark values of this
-    //     self.base.max_len()
-    // }
 
     fn split_at(self, index: usize) -> (Self, Self) {
         // Working example:
@@ -605,7 +594,7 @@ mod test {
         IndexedParallelIterator,
     };
 
-    /// Helper to set the number of threads used by rayon's threadpool.
+    /// Helper to set the number of threads used by rayon's thread-pool.
     #[allow(dead_code)]
     fn set_rayon_threads() {
         crate::ThreadPoolBuilder::new()
@@ -616,23 +605,14 @@ mod test {
 
 
     #[test]
-    fn check_map_interleaved() {
-        // Test using Vec
-        let nums = vec![1, 2, 3];
-        let result = nums.into_par_iter()
-            .map_interleaved(|n| n * 10)
-            .collect::<Vec<_>>();
-
-        assert_eq!(result, vec![1, 10, 2, 20, 3, 30]);
-
-
-        // More thorough checks with skip/take.
+    fn check_map_interleave() {
+        // For each input length try all possible 'skip' and 'take' counts.
         for base_len in 0..16 {
             let len = base_len * 2;
             for skip in 0..=len {
                 for take in 0..(len - skip) {
                     let par_nums = (0..len).into_par_iter()
-                        .map_interleaved(|n| n * 10)
+                        .map_interleave(|n| n * 10)
                         .skip(skip)
                         .take(take)
                         .collect::<Vec<_>>();
