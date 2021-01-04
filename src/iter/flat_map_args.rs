@@ -269,6 +269,8 @@ impl<'a, P, F, A, R> Producer for FlatMapExactProducer<'a, P, F, A>
                 None => 0,
             };
 
+            let args_len = self.args.len();
+
             // Logical index of the start of the back section.
             let back_start = self.len - back_len;
 
@@ -278,8 +280,6 @@ impl<'a, P, F, A, R> Producer for FlatMapExactProducer<'a, P, F, A>
                 // If there is a 'split' base item (i.e. both left and right sides need to produce
                 // an item based on a single base item), then we pop it from the right hand base to
                 // allow us to populate it as left's last item and right's first item.
-
-                let args_len = self.args.len();
 
                 // How many logical items 'into' the base is the index.
                 let base_index = index - front_len;
@@ -307,17 +307,21 @@ impl<'a, P, F, A, R> Producer for FlatMapExactProducer<'a, P, F, A>
 
             } else {
                 // Split occurs within self.back, right base will be empty.
-                let base_split = back_start - front_len;
-                let back_split = index - back_start;
 
+                // Split base at its 'real' length (i.e. left retains full base, right is empty).
+                let base_len = back_start - front_len;
+                let base_split = base_len / args_len;
                 let (l_base, r_base) = self.base.split_at(base_split);
+
                 let (l_back, r_front) = match self.back {
                     Some(back) => {
-                        debug_assert!(back_split <= back.len());
+                        // We know that index >= back_start from outer if-condition.
+                        let back_split = index - back_start;
                         let (left, right) = back.split_at(back_split);
+
                         (Some(left), Some(right))
                     }
-                    None => (None, None)
+                    None => (None, None),
                 };
 
                 (
