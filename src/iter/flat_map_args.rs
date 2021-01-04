@@ -848,7 +848,7 @@ mod test {
 
     #[test]
     fn check_flat_map_exact() {
-        let multipliers: &[i32] = &[1, 10, 100];
+        let multipliers: &[usize] = &[1, 10, 100];
 
         // Test using Vec
         let nums = vec![1, 2, 3];
@@ -858,37 +858,27 @@ mod test {
 
         assert_eq!(result, vec![1, 10, 100, 2, 20, 200, 3, 30, 300]);
 
+        // More thorough checks with skip/take.
+        for base_len in 0..16 {
+            let len = base_len * multipliers.len();
+            for skip in 0..=len {
+                for take in 0..(len - skip) {
+                    let par_nums = (0..len).into_par_iter()
+                        .flat_map_exact(multipliers, |n, m| n * m)
+                        .skip(skip)
+                        .take(take)
+                        .collect::<Vec<_>>();
 
-        // Test using a range and with skip()
-        let range = 1..6;
-        let skip_count = 1;
-        let par_nums = range.clone().into_par_iter()
-            .map_interleaved(|n| n * 10)
-            .skip(skip_count)
-            .collect::<Vec<_>>();
+                    let seq_nums = (0..len)
+                        .flat_map(move |n| multipliers.iter().map(move |m| n * m))
+                        .skip(skip)
+                        .take(take)
+                        .collect::<Vec<_>>();
 
-        let seq_nums = range.clone().into_iter()
-            .flat_map(|n| vec![n, n * 10])
-            .skip(skip_count)
-            .collect::<Vec<_>>();
-
-        assert_eq!(par_nums, seq_nums);
-
-
-        // More thorough skip testing
-        for limit in 0..128 {
-            for skip in 0..=128 {
-                let par_nums = (0..limit).into_par_iter()
-                    .flat_map_exact(multipliers, |n, m| n * m)
-                    .skip(skip)
-                    .collect::<Vec<_>>();
-
-                let seq_nums = (0..limit)
-                    .flat_map(move |n| multipliers.iter().map(move |m| n * m))
-                    .skip(skip)
-                    .collect::<Vec<_>>();
-
-                assert_eq!(par_nums, seq_nums);
+                    // eprintln!("len: {}, skip: {}, take: {}", len, skip, take);
+                    // eprintln!("par_nums: {:?}", par_nums);
+                    assert_eq!(par_nums, seq_nums);
+                }
             }
         }
     }
