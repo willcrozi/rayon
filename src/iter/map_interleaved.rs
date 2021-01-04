@@ -367,21 +367,6 @@ impl<'f, P, F> PopProducer for MapInterleavedProducer<'f, P, F>
                 self.len -= 1;
                 item
             })
-
-        // let result = if let Some(item) = self.front.take() {
-        //     Some((self.map_op)(item))
-        // } else if let Some(item) = self.base.pop() {
-        //     self.front = Some(item.clone());
-        //     Some(item)
-        // } else {
-        //     self.back.take()
-        // };
-        //
-        // if result.is_some() {
-        //     debug_assert!(self.len > 0);
-        //     self.len -= 1;
-        // }
-        // result
     }
 }
 
@@ -641,36 +626,27 @@ mod test {
         assert_eq!(result, vec![1, 10, 2, 20, 3, 30]);
 
 
-        // Test using a range and with skip()
-        let range = 1..6;
-        let skip_count = 1;
-        let par_nums = range.clone().into_par_iter()
-            .map_interleaved(|n| n * 10)
-            .skip(skip_count)
-            .collect::<Vec<_>>();
+        // More thorough checks with skip/take.
+        for base_len in 0..16 {
+            let len = base_len * 2;
+            for skip in 0..=len {
+                for take in 0..(len - skip) {
+                    let par_nums = (0..len).into_par_iter()
+                        .map_interleaved(|n| n * 10)
+                        .skip(skip)
+                        .take(take)
+                        .collect::<Vec<_>>();
 
-        let seq_nums = range.clone().into_iter()
-            .flat_map(|n| vec![n, n * 10])
-            .skip(skip_count)
-            .collect::<Vec<_>>();
+                    let seq_nums = (0..len)
+                        .flat_map(|n| vec![n, n * 10])
+                        .skip(skip)
+                        .take(take)
+                        .collect::<Vec<_>>();
 
-        assert_eq!(par_nums, seq_nums);
-
-
-        // More thorough skip testing
-        for limit in 0..128 {
-            for skip in 0..=128 {
-                let par_nums = (0..limit).into_par_iter()
-                    .map_interleaved(|n| n * 10)
-                    .skip(skip)
-                    .collect::<Vec<_>>();
-
-                let seq_nums = (0..limit).into_iter()
-                    .flat_map(|n| vec![n, n * 10])
-                    .skip(skip)
-                    .collect::<Vec<_>>();
-
-                assert_eq!(par_nums, seq_nums);
+                    // eprintln!("len: {}, skip: {}, take: {}", len, skip, take);
+                    // eprintln!("par_nums: {:?}", par_nums);
+                    assert_eq!(par_nums, seq_nums);
+                }
             }
         }
     }
