@@ -71,7 +71,7 @@ impl<'a, T: Clone + Sync+ Send + 'a> ArgSource for &'a [T] {
 impl<I> ArgSource for IterCache<I>
     where
         I: ExactSizeIterator + DoubleEndedIterator,
-        I::Item: Clone,
+        I::Item: Sync + Send,
 {
     type Item = I::Item;
 
@@ -85,6 +85,24 @@ impl<I> ArgSource for IterCache<I>
 
     fn try_get(&self, index: usize) -> Option<&Self::Item> {
         IterCache::try_get(self, index)
+    }
+}
+
+impl<T: Sync + Send> ArgSource for Option<T> {
+    type Item = T;
+
+    fn len(&self) -> usize { self.is_some() as usize }
+
+    fn get(&self, index: usize) -> &Self::Item {
+        assert_eq!(index, 0);
+        self.as_ref().unwrap()
+    }
+
+    fn try_get(&self, index: usize) -> Option<&Self::Item> {
+        match index {
+            0 => self.as_ref(),
+            _ => None,
+        }
     }
 }
 
@@ -213,6 +231,9 @@ impl<I> IterCache<I>
         self.inner.read().unwrap()
     }
 }
+
+unsafe impl<I: Iterator> Sync for IterCache<I> where I::Item: Sync {}
+unsafe impl<I: Iterator> Send for IterCache<I> where I::Item: Send {}
 
 // NOTE: This would be nice but it seems there's no feasible way to achieve this.
 // impl<I, Idx> ops::Index<Idx> for IterCache<I>
