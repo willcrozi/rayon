@@ -193,11 +193,11 @@ pub use self::{
 
 mod step_by;
 
-mod flat_map_args;
-pub use self::flat_map_args::FlatMapExact;
+mod flat_map_exact;
+pub use self::flat_map_exact::FlatMapExact;
 
 mod util;
-pub use self::util::{Args, IterCache};
+pub use self::util::{ArgSource, IterCache};
 
 #[cfg(step_by)]
 pub use self::step_by::StepBy;
@@ -881,8 +881,8 @@ pub trait ParallelIterator: Sized + Send {
     ///...TODO
     fn flat_map_exact<F, A, R>(self, args: A, map_op: F)  -> FlatMapExact<Self, F, A>
     where
-        F: Fn(<Self as ParallelIterator>::Item, &<A as Args>::Item) -> R + Sync + Send,
-        A: Args, { flat_map_args::flat_map_exact(self, args, map_op)  }
+        F: Fn(<Self as ParallelIterator>::Item, &<A as ArgSource>::Item) -> R + Sync + Send,
+        A: ArgSource, { flat_map_exact::flat_map_exact(self, args, map_op)  }
 
     /// Applies `map_op` to each item of this iterator to get nested serial iterators,
     /// producing a new parallel iterator that flattens these back into one.

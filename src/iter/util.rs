@@ -7,18 +7,15 @@ use std::alloc::{self, Layout};
 use std::ptr::{self, NonNull};
 use std::sync::Arc;
 
-// TODO rename Args: it's not specific to arguments!
-// TODO look into the relationship between this trait and SplitItem...(which also needs renaming, haha!)
-//      maybe rename SplitItem -> Args and rename this... ArgsSource....
-/// A trait representing a list of arguments.
-///
-/// `Args` is intended to be shared (across threads) in order to allow parallel iterator producers
-/// to dynamically split and adjust their contents... TODO
-pub trait Args: Sync + Send {
-    /// The type of the arguments provided by this `Args`.
-    type Item: Clone;
+// TODO rename ArgSource: it's not specific to arguments!
+/// A trait representing a list of arguments that can be safely sent and shared between threads.
+/// The intention is to allow implementations the choice between operating on data that is in-place
+/// or lazily acquired then cached.
+pub trait ArgSource: Sync + Send {
+    /// The type of the arguments provided by this `ArgSource`.
+    type Item;
 
-    /// The number of arguments provided by this `Args`.
+    /// The number of arguments provided by this `ArgSource`.
     fn len(&self) -> usize;
 
     /// Returns the argument at `index`. Panics if `index >= self.len()`.
@@ -28,10 +25,7 @@ pub trait Args: Sync + Send {
     fn try_get(&self, index: usize) -> Option<&Self::Item>;
 }
 
-// TODO maybe default iter type that is used by a default impl. of iter_range (and full iter method?)
-
-// Let's get this straight:
-// Args _owns_ the items, whether they be moved in structs or moved-in references
+// Design notes:
 
 // Approach (1)
 //      trait Args {
@@ -48,6 +42,9 @@ pub trait Args: Sync + Send {
 //          fn get(&self, ...) -> Self::Item;
 //          fn iter(&self, ...) -> Self::Iter;
 
+// Approach (3)
+//      Same as (1) but without the iter() method! This is the approach taken.
+
 // Scenarios:
 // impl Args for &[T]
 // Item: &T
@@ -56,7 +53,7 @@ pub trait Args: Sync + Send {
 // Item: &T
 
 
-impl<'a, T: Clone + Sync+ Send + 'a> Args for &'a [T] {
+impl<'a, T: Clone + Sync+ Send + 'a> ArgSource for &'a [T] {
     type Item = T;
 
     #[inline]
@@ -70,6 +67,27 @@ impl<'a, T: Clone + Sync+ Send + 'a> Args for &'a [T] {
         if index < <[T]>::len(&self) { Some(&self[index]) } else { None }
     }
 }
+
+impl<I> ArgSource for IterCache<I>
+    where
+        I: ExactSizeIterator + DoubleEndedIterator,
+        I::Item: Clone,
+{
+    type Item = I::Item;
+
+    fn len(&self) -> usize {
+        IterCache::len(self)
+    }
+
+    fn get(&self, index: usize) -> &Self::Item {
+        IterCache::get(self, index)
+    }
+
+    fn try_get(&self, index: usize) -> Option<&Self::Item> {
+        IterCache::try_get(self, index)
+    }
+}
+
 
 ////////////////////////////////////////////////////////////////////////////////
 // IterCache
@@ -193,26 +211,6 @@ impl<I> IterCache<I>
 
         // Return the read lock to caller
         self.inner.read().unwrap()
-    }
-}
-
-impl<I> Args for IterCache<I>
-where
-    I: ExactSizeIterator + DoubleEndedIterator,
-    I::Item: Clone,
-{
-    type Item = I::Item;
-
-    fn len(&self) -> usize {
-        IterCache::len(self)
-    }
-
-    fn get(&self, index: usize) -> &Self::Item {
-        IterCache::get(self, index)
-    }
-
-    fn try_get(&self, index: usize) -> Option<&Self::Item> {
-        IterCache::try_get(self, index)
     }
 }
 
