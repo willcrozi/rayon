@@ -433,26 +433,29 @@ impl<I: Iterator> Drop for IterCacheInner<I> {
 
 #[cfg(test)]
 mod test {
-    use std::{thread, mem, iter};
-    use std::time::Duration;
     use super::IterCache;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::thread;
+    use std::time::Duration;
+    use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
 
     #[test]
     fn iter_cache_zero_sized() {
-        let zst_iter = (0..100).map(|_| ());
+        // Repeated to increase chances of finding problems.
+        for _ in 0..10_000 {
+            let zst_iter = (0..100).map(|_| ());
 
-        // Test when whole of base consumed.
-        test_iter_cache(zst_iter.clone(), |cache| {
-            let collected = cache.iter().collect::<Vec<_>>();
-            assert_eq!(collected.len(), 100);
-        });
+            // Test when whole of base consumed.
+            test_iter_cache(zst_iter.clone(), |cache| {
+                let collected = cache.iter().collect::<Vec<_>>();
+                assert_eq!(collected.len(), 100);
+            });
 
-        // Test with single accesses towards each end.
-        test_iter_cache(zst_iter.clone(), |cache| {
-            // This is done purely for the drop checking.
-            let _items = vec![cache.get(21), cache.get(79)];
-        });
+            // Test with single accesses towards each end.
+            test_iter_cache(zst_iter.clone(), |cache| {
+                // This is done purely for the drop checking.
+                let _items = vec![cache.get(21), cache.get(79)];
+            });
+        }
     }
 
     #[test]
@@ -460,95 +463,114 @@ mod test {
         const ITER_LEN: usize = 100;
         const RANGE_LEN: usize = 10;
 
-        test_iter_cache(0..ITER_LEN, |cache| {
-            let mut handles = vec![];
+        // Repeated to increase chances of finding problems.
+        for _ in 0..100 {
+            test_iter_cache(0..ITER_LEN, |cache| {
+                let mut handles = vec![];
 
-            for _ in 0..=8 {
-                let cache = cache.clone();
+                for _ in 0..=8 {
+                    let cache = cache.clone();
 
-                let handle = thread::spawn(move || {
-                    for i in 0..(ITER_LEN - RANGE_LEN) {
-                        // Front
-                        let f_range = i..(i + RANGE_LEN);
-                        let f_iter = cache.iter_range(f_range.clone());
+                    let handle = thread::spawn(move || {
+                        for i in 0..(ITER_LEN - RANGE_LEN) {
+                            // Front
+                            let f_range = i..(i + RANGE_LEN);
+                            let f_iter = cache.iter_range(f_range.clone());
 
-                        let result = f_iter.map(|item| item.0).collect::<Vec<_>>();
-                        let expected = f_range.collect::<Vec<_>>();
+                            let result = f_iter.map(|item| item.0).collect::<Vec<_>>();
+                            let expected = f_range.collect::<Vec<_>>();
 
-                        assert_eq!(&result, &expected);
-                        thread::sleep(Duration::from_micros(50));
+                            assert_eq!(&result, &expected);
+                            thread::sleep(Duration::from_micros(5));
 
-                        // Back
-                        let base = (ITER_LEN - RANGE_LEN) - i;
-                        let b_range = base..(base + RANGE_LEN);
-                        let b_iter = cache.iter_range(b_range.clone());
+                            // Back
+                            let base = (ITER_LEN - RANGE_LEN) - i;
+                            let b_range = base..(base + RANGE_LEN);
+                            let b_iter = cache.iter_range(b_range.clone());
 
-                        let result = b_iter.map(|item| item.0).collect::<Vec<_>>();
-                        let expected = b_range.collect::<Vec<_>>();
+                            let result = b_iter.map(|item| item.0).collect::<Vec<_>>();
+                            let expected = b_range.collect::<Vec<_>>();
 
-                        assert_eq!(&result, &expected);
-                        thread::sleep(Duration::from_micros(200));
-                    }
-                });
+                            assert_eq!(&result, &expected);
+                            thread::sleep(Duration::from_micros(5));
+                        }
+                    });
 
-                handles.push(handle);
-            }
+                    handles.push(handle);
+                }
 
-            for t in handles {
-                t.join().unwrap();
-            }
-        });
+                for t in handles {
+                    t.join().unwrap();
+                }
+            });
+        }
+        // `cache` will be fully dropped here (including all clones).
     }
 
     ////////////////////////////////////////////////////////////////////////////
     // Test helpers
     ////////////////////////////////////////////////////////////////////////////
 
-    static CREATE_COUNT: AtomicUsize = AtomicUsize::new(0);
-    static DROP_COUNT: AtomicUsize = AtomicUsize::new(0);
-
     #[derive(Clone)]
-    struct TestItem<T>(T);
+    struct TestItem<T>(T, Arc<AtomicUsize>);
     impl<T> TestItem<T> {
-        fn new(val: T) -> Self {
-            CREATE_COUNT.fetch_add(1, Ordering::SeqCst);
-            TestItem(val)
+        fn new((val, count): (T, Arc<AtomicUsize>)) -> Self {
+            count.fetch_add(1, Ordering::SeqCst);
+            TestItem(val, count)
         }
     }
 
     impl<T> Drop for TestItem<T> {
         fn drop(&mut self) {
-            DROP_COUNT.fetch_add(1, Ordering::SeqCst);
+            self.1.fetch_sub(1, Ordering::SeqCst);
         }
     }
 
-    // Test wrapper base iterator type.
-    type BaseIter<I> = iter::Map<I, fn(<I as Iterator>::Item) -> TestItem<<I as Iterator>::Item>>;
+    #[derive(Clone)]
+    struct BaseIter<I: Iterator> {
+        base: I,
+        count: Arc<AtomicUsize>,
+    }
 
-    // Create a base iterator for testing that counts yielded items.
-    fn base_iter<I>(iter: I)
-                    -> iter::Map<I, fn(I::Item) -> TestItem<I::Item>>
-        where I: ExactSizeIterator + DoubleEndedIterator + Clone { iter.map(TestItem::new) }
+    impl<I: Iterator> BaseIter<I> {
+        fn new(base: I, count: Arc<AtomicUsize>) -> Self {
+            BaseIter { base, count }
+        }
+    }
+
+    impl<I: Iterator> Iterator for BaseIter<I> {
+        type Item = TestItem<I::Item>;
+        fn next(&mut self) -> Option<Self::Item> {
+            self.base.next().map(|item| TestItem::new((item, self.count.clone())))
+        }
+    }
+
+    impl<I: ExactSizeIterator> ExactSizeIterator for BaseIter<I> {
+        fn len(&self) -> usize { self.base.len() }
+    }
+
+    impl<I: DoubleEndedIterator> DoubleEndedIterator for BaseIter<I> {
+        fn next_back(&mut self) -> Option<Self::Item> {
+            self.base.next_back().map(|item| TestItem::new((item, self.count.clone())))
+        }
+    }
 
     // Convenience function that wraps the 'iter' and its items with drop-count checking types.
     // The given `test_op` function is then invoked, passing the wrapped iterator for further
     // testing.
     fn test_iter_cache<I, F>(iter: I, test_op: F)
-        where I: ExactSizeIterator + DoubleEndedIterator + Clone,
-              F: Fn(&IterCache<BaseIter<I>>)
+    where I: ExactSizeIterator + DoubleEndedIterator + Clone,
+          F: Fn(IterCache<BaseIter<I>>),
     {
-        CREATE_COUNT.store(0, Ordering::SeqCst);
-        DROP_COUNT.store(0, Ordering::SeqCst);
+        let drop_count = Arc::new(AtomicUsize::new(0));
 
-        let base = base_iter(iter);
-        let cache = IterCache::new(base);
+        let base = BaseIter::new(iter, drop_count.clone());
 
         // Perform the test operation.
-        test_op(&cache);
+        test_op(IterCache::new(base));
 
-        // Drop the cache and check test item drop counts
-        mem::drop(cache);
-        assert_eq!(CREATE_COUNT.load(Ordering::SeqCst), DROP_COUNT.load(Ordering::SeqCst));
+        // Check drop counts.
+        assert_eq!(drop_count.load(Ordering::SeqCst), 0);
     }
 
     // TODO currently unused, fix this (look at itertools test macros?).
