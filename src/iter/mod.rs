@@ -897,7 +897,7 @@ pub trait ParallelIterator: Sized + Send {
     ///
     /// assert_eq!(result, vec![2, 20, 200, 3, 30, 300]);
     /// ```
-    fn flat_map_exact<F, A, R>(self, args: A, map_op: F)  -> FlatMapExact<Self, F, A>
+    fn flat_map_exact<A, F, R>(self, args: A, map_op: F)  -> FlatMapExact<Self, A, F>
     where
         F: Fn(<Self as ParallelIterator>::Item, &<A as ArgSource>::Item) -> R + Sync + Send,
         A: ArgSource, { flat_map_exact::flat_map_exact(self, args, map_op)  }

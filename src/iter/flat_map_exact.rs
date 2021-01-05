@@ -15,19 +15,19 @@ use std::ops::Range;
 /// `FlatMapExact` is an iterator...
 #[must_use = "iterator adaptors are lazy and do nothing unless consumed"]
 #[derive(Clone, Debug)]
-pub struct FlatMapExact<I, F, A> {
+pub struct FlatMapExact<I, A, F> {
     base: I,
     map_op: F,
     args: A,
 }
 
-pub(crate) fn flat_map_exact<I, F, A, R>(base: I, args: A, map_op: F)  -> FlatMapExact<I, F, A>
+pub(crate) fn flat_map_exact<I, A, F, R>(base: I, args: A, map_op: F)  -> FlatMapExact<I, A, F>
 where
     I: ParallelIterator,
     F: Fn(I::Item, &A::Item) -> R + Sync + Send,
     A: ArgSource { FlatMapExact { base, map_op, args } }
 
-impl<I, F, A, R> ParallelIterator for FlatMapExact<I, F, A>
+impl<I, F, A, R> ParallelIterator for FlatMapExact<I, A, F>
 where I: ParallelIterator,
       I::Item: Clone + Send,
       A: ArgSource,
@@ -51,7 +51,7 @@ where I: ParallelIterator,
 }
 
 
-impl<I, F, A, R> IndexedParallelIterator for FlatMapExact<I, F, A>
+impl<I,A, F, R> IndexedParallelIterator for FlatMapExact<I, A, F>
     where I: PopParallelIterator,
           I::Item: Clone + Send,
           F: Fn(I::Item, &A::Item) -> R + Sync + Send,
@@ -94,14 +94,14 @@ impl<I, F, A, R> IndexedParallelIterator for FlatMapExact<I, F, A>
             len,
         });
 
-        struct Callback<CB, F, A> {
+        struct Callback<CB, A, F> {
             callback: CB,
             map_op: F,
             args: A,
             len: usize
         }
 
-        impl<F, T, A, R, CB> PopProducerCallback<T> for Callback<CB, F, A>
+        impl<F, T, A, R, CB> PopProducerCallback<T> for Callback<CB, A, F>
             where CB: ProducerCallback<R>,
                   T: Clone + Send,
                   F: Fn(T, &A::Item) -> R + Sync,
@@ -121,7 +121,7 @@ impl<I, F, A, R> IndexedParallelIterator for FlatMapExact<I, F, A>
     }
 }
 
-impl<I, F, A, R> PopParallelIterator for FlatMapExact<I, F, A>
+impl<I, A, F, R> PopParallelIterator for FlatMapExact<I, A, F>
     where I: PopParallelIterator,
           I::Item: Clone + Send,
           F: Fn(I::Item, &A::Item) -> R + Sync + Send,
@@ -139,14 +139,14 @@ impl<I, F, A, R> PopParallelIterator for FlatMapExact<I, F, A>
             len,
         });
 
-        struct Callback<CB, F, A> {
+        struct Callback<CB, A, F> {
             callback: CB,
             map_op: F,
             args: A,
             len: usize,
         }
 
-        impl<F, T, A, R, CB> PopProducerCallback<T> for Callback<CB, F, A>
+        impl<F, T, A, R, CB> PopProducerCallback<T> for Callback<CB, A, F>
             where CB: PopProducerCallback<R>,
                   T: Clone + Send,
                   F: Fn(T, &A::Item) -> R + Sync,
@@ -168,7 +168,7 @@ impl<I, F, A, R> PopParallelIterator for FlatMapExact<I, F, A>
 }
 
 
-struct FlatMapExactProducer<'a, P, F, A>
+struct FlatMapExactProducer<'a, P, A, F>
     where P: PopProducer,
 {
     base: P,
@@ -179,7 +179,7 @@ struct FlatMapExactProducer<'a, P, F, A>
     len: usize,
 }
 
-impl<'a, P, F, A, R> FlatMapExactProducer<'a, P, F, A>
+impl<'a, P, A, F, R> FlatMapExactProducer<'a, P, A, F>
     where P: PopProducer,
           P::Item: Clone,
           A: ArgSource,
@@ -198,7 +198,7 @@ impl<'a, P, F, A, R> FlatMapExactProducer<'a, P, F, A>
     }
 }
 
-impl<'a, P, F, A, R> Producer for FlatMapExactProducer<'a, P, F, A>
+impl<'a, P, A, F, R> Producer for FlatMapExactProducer<'a, P, A, F>
     where P: PopProducer,
           P::Item: Clone + Send,
           F: Fn(P::Item, &'a A::Item) -> R + Sync,
@@ -206,7 +206,7 @@ impl<'a, P, F, A, R> Producer for FlatMapExactProducer<'a, P, F, A>
           R: Send,
 {
     type Item = F::Output;
-    type IntoIter = FlatMapExactIter<'a, P::IntoIter, F, A>;
+    type IntoIter = FlatMapExactIter<'a, P::IntoIter, A, F>;
 
     fn into_iter(self) -> Self::IntoIter {
         FlatMapExactIter::new(self.base.into_iter(), self.map_op, self.args, self.front, self.back)
@@ -365,7 +365,7 @@ impl<'a, P, F, A, R> Producer for FlatMapExactProducer<'a, P, F, A>
     }
 }
 
-impl<'a, P, F, A, R> PopProducer for FlatMapExactProducer<'a, P, F, A>
+impl<'a, P, A, F, R> PopProducer for FlatMapExactProducer<'a, P, A, F>
     where P: PopProducer,
           P::Item: Clone + Send,
           F: Fn(P::Item, &'a A::Item) -> R + Sync,
@@ -412,7 +412,7 @@ impl<'a, P, F, A, R> PopProducer for FlatMapExactProducer<'a, P, F, A>
     }
 }
 
-struct FlatMapExactIter<'a, I, F, A>
+struct FlatMapExactIter<'a, I, A, F>
 where
     I: Iterator,
     I::Item: Clone,
@@ -425,7 +425,7 @@ where
     back: Option<ArgsIter<'a, I::Item, A>>,
 }
 
-impl<'a, I, F, A, R> FlatMapExactIter<'a, I, F, A>
+impl<'a, I, F, A, R> FlatMapExactIter<'a, I, A, F>
     where
         I: Iterator,
         I::Item: Clone,
@@ -462,7 +462,7 @@ impl<'a, I, F, A, R> FlatMapExactIter<'a, I, F, A>
     }
 }
 
-impl<'a, I, F, A, R> Iterator for FlatMapExactIter<'a, I, F, A>
+impl<'a, I, A, F, R> Iterator for FlatMapExactIter<'a, I, A, F>
     where
         I: DoubleEndedIterator + ExactSizeIterator,
         I::Item: Clone,
@@ -518,7 +518,7 @@ impl<'a, I, F, A, R> Iterator for FlatMapExactIter<'a, I, F, A>
     }
 }
 
-impl<'a, I, F, A, R> DoubleEndedIterator for FlatMapExactIter<'a, I, F, A>
+impl<'a, I, A, F, R> DoubleEndedIterator for FlatMapExactIter<'a, I, A, F>
     where
         I: DoubleEndedIterator + ExactSizeIterator,
         I::Item: Clone,
@@ -566,7 +566,7 @@ impl<'a, I, F, A, R> DoubleEndedIterator for FlatMapExactIter<'a, I, F, A>
     }
 }
 
-impl<'a, I, F, A, R> ExactSizeIterator for FlatMapExactIter<'a, I, F, A>
+impl<'a, I, A, F, R> ExactSizeIterator for FlatMapExactIter<'a, I, A, F>
     where
         I: DoubleEndedIterator + ExactSizeIterator,
         I::Item: Clone,
@@ -588,23 +588,23 @@ impl<'a, I, F, A, R> ExactSizeIterator for FlatMapExactIter<'a, I, F, A>
     }
 }
 
-struct FlatMapExactConsumer<'a, C, F, A> {
+struct FlatMapExactConsumer<'a, C, A, F> {
     base: C,
     map_op:  &'a F,
     args: &'a A,
 }
 
-impl<'f, C, F, A> FlatMapExactConsumer<'f, C, F, A>{
+impl<'f, C, F, A> FlatMapExactConsumer<'f, C, A, F>{
     fn new(base: C, map_op: &'f F, args: &'f A) -> Self { FlatMapExactConsumer { base, map_op, args } }
 }
 
-impl<'a, C, F, A, T, R> Consumer<T> for FlatMapExactConsumer<'a, C, F, A>
+impl<'a, C, F, A, T, R> Consumer<T> for FlatMapExactConsumer<'a, C, A, F>
     where C: Consumer<F::Output>,
           F: Fn(T, &'a A::Item) -> R + Sync,
           T: Clone,
           A: ArgSource,
 {
-    type Folder = FlatMapExactFolder<'a, C::Folder, F, T, A>;
+    type Folder = FlatMapExactFolder<'a, C::Folder, T, A, F>;
     type Reducer = C::Reducer;
     type Result = C::Result;
 
@@ -640,7 +640,7 @@ impl<'a, C, F, A, T, R> Consumer<T> for FlatMapExactConsumer<'a, C, F, A>
     }
 }
 
-impl<'a, T, C, F, A, R> UnindexedConsumer<T> for FlatMapExactConsumer<'a, C, F, A>
+impl<'a, T, C, A, F, R> UnindexedConsumer<T> for FlatMapExactConsumer<'a, C, A, F>
     where C: UnindexedConsumer<F::Output>,
           F: Fn(T, &'a A::Item) -> R + Sync,
           T: Clone + Send,
@@ -661,7 +661,7 @@ impl<'a, T, C, F, A, R> UnindexedConsumer<T> for FlatMapExactConsumer<'a, C, F, 
     }
 }
 
-struct FlatMapExactFolder<'f, C, F, T, A> {
+struct FlatMapExactFolder<'f, C, T, A, F> {
     base: C,
     map_op: &'f F,
     args: &'f A,
@@ -670,7 +670,7 @@ struct FlatMapExactFolder<'f, C, F, T, A> {
     back: Option<BaseItem<T>>,
 }
 
-impl<'a, C, F, T, A, R> Folder<T> for FlatMapExactFolder<'a, C, F, T, A>
+impl<'a, C, F, T, A, R> Folder<T> for FlatMapExactFolder<'a, C, T, A, F>
     where
         C: Folder<F::Output>,
         F: Fn(T, &'a A::Item) -> R,
