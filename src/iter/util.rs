@@ -7,6 +7,15 @@ use std::alloc::{self, Layout};
 use std::ptr::{self, NonNull};
 use std::sync::Arc;
 
+/// Helper to set the number of threads used by rayon's thread-pool.
+//#[allow(dead_code)]
+pub(crate) fn set_rayon_threads(count: usize) {
+    crate::ThreadPoolBuilder::new()
+        .num_threads(count)
+        .build_global()
+        .unwrap();
+}
+
 // TODO rename ArgSource: it's not specific to arguments!
 /// A trait representing a list of arguments that can be safely sent and shared between threads.
 /// The intention is to allow implementations the choice between operating on data that is in-place

@@ -825,21 +825,8 @@ impl<'a, T: Clone, A: ArgSource> DoubleEndedIterator for ArgsIter<'a, T, A> {
 
 #[cfg(test)]
 mod test {
-    use crate::iter::{
-        ParallelIterator,
-        IntoParallelIterator,
-        IndexedParallelIterator,
-    };
-
-    /// Helper to set the number of threads used by rayon's thread-pool.
-    #[allow(dead_code)]
-    fn set_rayon_threads() {
-        crate::ThreadPoolBuilder::new()
-            .num_threads(1)
-            .build_global()
-            .unwrap();
-    }
-
+    use crate::iter::{ParallelIterator, IntoParallelIterator, IndexedParallelIterator};
+    use crate::iter::util::set_rayon_threads;
 
     #[test]
     fn check_flat_map_exact() {
@@ -868,5 +855,20 @@ mod test {
                 }
             }
         }
+    }
+
+    #[test]
+    fn check_combo() {
+        set_rayon_threads(1);
+
+        let add_nums = vec![1, 2, 3];
+        let base_nums = vec![10, 20, 30];
+
+        let par_nums = base_nums.into_par_iter()
+            .map_interleave(|_| 0)
+            .flat_map_exact(&add_nums[..], |base, add| base + *add)
+            .skip(1);
+        assert_eq!(par_nums.collect::<Vec<_>>(), vec![11, 12, 13, 21, 22, 23, 31, 32, 33]);
+
     }
 }

@@ -594,16 +594,6 @@ mod test {
         IndexedParallelIterator,
     };
 
-    /// Helper to set the number of threads used by rayon's thread-pool.
-    #[allow(dead_code)]
-    fn set_rayon_threads() {
-        crate::ThreadPoolBuilder::new()
-            .num_threads(1)
-            .build_global()
-            .unwrap();
-    }
-
-
     #[test]
     fn check_map_interleave() {
         // For each input length try all possible 'skip' and 'take' counts.
