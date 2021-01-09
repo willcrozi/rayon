@@ -90,11 +90,9 @@ impl<I, F> IndexedParallelIterator for MapInterleave<I, F>
     }
 
     fn len(&self) -> usize {
-        let len = self.base.len();
-        if len > 0 {
-            len.checked_mul(2).expect("overflow")
-        } else {
-            0
+        match self.base.len() {
+            0 => 0,
+            len => len.checked_mul(2).expect("overflow"),
         }
     }
 
@@ -255,7 +253,7 @@ impl<'f, P, F> Producer for MapInterleavedProducer<'f, P, F>
 
         // TODO optimise reuse of of this producer (self) to aid return value optimisation.
 
-        if index <= 0 {
+        if index < front_len {
             // Split occurs at the very front, left will be empty.
             let (l_base, r_base) = self.base.split_at(0);
 
@@ -343,19 +341,36 @@ impl<'f, P, F> PopProducer for MapInterleavedProducer<'f, P, F>
           F: Fn(P::Item) -> P::Item + Sync,
 {
     fn try_pop(&mut self) -> Option<Self::Item> {
-        self.front.take()
-            .map(self.map_op)
-            .or_else(||
-                self.base.try_pop().map(|item| {
-                    self.front = Some(item.clone());
-                    item
-                }))
-            .or_else(|| self.back.take())
-            .map(|item| {
-                debug_assert!(self.len > 0);
-                self.len -= 1;
-                item
-            })
+        if self.len < 1 {
+            return None;
+        } else {
+            self.len -= 1;
+        }
+
+        if let Some(front) = self.front.take() {
+            Some((self.map_op)(front))
+        } else if let Some(item) = self.base.try_pop() {
+            self.front = Some(item.clone());
+            Some(item)
+        } else if let Some(back) = self.back.take() {
+            Some(back)
+        } else {
+            unreachable!()
+        }
+
+        // self.front.take()
+        //     .map(self.map_op)
+        //     .or_else(||
+        //         self.base.try_pop().map(|item| {
+        //             self.front = Some(item.clone());
+        //             item
+        //         }))
+        //     .or_else(|| self.back.take())
+        //     .map(|item| {
+        //         debug_assert!(self.len > 0);
+        //         self.len -= 1;
+        //         item
+        //     })
     }
 }
 

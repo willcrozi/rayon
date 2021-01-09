@@ -104,7 +104,7 @@ impl<I,A, F, R> IndexedParallelIterator for FlatMapExact<I, A, F>
         impl<F, T, A, R, CB> PopProducerCallback<T> for Callback<CB, A, F>
             where CB: ProducerCallback<R>,
                   T: Clone + Send,
-                  F: Fn(T, &A::Item) -> R + Sync,
+                  F: Fn(T, &A::Item) -> R + Sync + Send,
                   A: ArgSource,
                   R: Send,
         {
@@ -769,6 +769,11 @@ impl<T: Clone> BaseItem<T> {
         if args.len() == 0 { return None; }
 
         let BaseItem(ref item, ref mut range) = self;
+
+        // Debug
+        if range.start >= args.len() {
+            println!("BaseItem range: {:?}", range);
+        }
 
         // Args::get below should panic anyway but for debug this is clearer.
         debug_assert!(range.start < args.len());
