@@ -309,28 +309,28 @@ impl<'f, P, F> Producer for MapInterleavedProducer<'f, P, F>
         }
     }
 
-    fn fold_with<G>(self, folder: G) -> G
+    fn fold_with<G>(mut self, folder: G) -> G
         where
             G: Folder<Self::Item>,
     {
-        let folder1 = MapInterleavedFolder {
+        let mut folder1 = MapInterleavedFolder {
             base: folder,
             map_op: self.map_op,
-            front: self.front,
-            back: self.back,
         };
-        // self.base.fold_with(folder1).base
 
-        // TODO investigate if this is correct here: it would appear that complete() is the place
-        //      to consume the rear item, if any, but it appears that the base consumer may assert
-        //      the correct length before this gets called.
-        // Consume the last item before any correctness assertions are performed.
-        let mut folder = self.base.fold_with(folder1);
-        if !folder.base.full() {
-            if let Some(item) = folder.back.take() {
-                folder.base = folder.base.consume(item);
-            }
+        // Consume the front, if present.
+        if let Some(front) = self.front.take() {
+            folder1.base = folder1.base.consume((self.map_op)(front));
         }
+
+        // Consume the base.
+        let mut folder = self.base.fold_with(folder1);
+
+        // Consume the back, if present.
+        if let Some(item) = self.back.take() {
+            folder.base = folder.base.consume(item);
+        }
+
         folder.base
     }
 }
@@ -474,7 +474,7 @@ impl<'f, T, C, F> Consumer<T> for MapInterleavedConsumer<'f, C, F>
         F: Fn(T) -> T + Sync,
         T: Clone + Send,
 {
-    type Folder = MapInterleavedFolder<'f, C::Folder, F, T>;
+    type Folder = MapInterleavedFolder<'f, C::Folder, F>;
     type Reducer = C::Reducer;
     type Result = C::Result;
 
@@ -496,8 +496,6 @@ impl<'f, T, C, F> Consumer<T> for MapInterleavedConsumer<'f, C, F>
         MapInterleavedFolder {
             base: self.base.into_folder(),
             map_op: self.map_op,
-            front: None,
-            back: None,
         }
     }
 
@@ -525,15 +523,12 @@ impl<'f, T, C, F> UnindexedConsumer<T> for MapInterleavedConsumer<'f, C, F>
     }
 }
 
-struct MapInterleavedFolder<'f, C, F, T> {
+struct MapInterleavedFolder<'f, C, F> {
     base: C,
     map_op: &'f F,
-    front: Option<T>,
-    // TODO this is possibly redundant
-    back: Option<T>,
 }
 
-impl<'f, C, F, T> Folder<T> for MapInterleavedFolder<'f, C, F, T>
+impl<'f, C, F, T> Folder<T> for MapInterleavedFolder<'f, C, F>
     where
         C: Folder<F::Output>,
         F: Fn(T) -> T,
@@ -542,17 +537,11 @@ impl<'f, C, F, T> Folder<T> for MapInterleavedFolder<'f, C, F, T>
     type Result = C::Result;
 
     fn consume(mut self, item: T) -> Self {
-        // Feeds up to 3 items to base folder: map_op(front), item, map_op(item)
-
-        if let Some(item) = self.front.take() {
-            self.base = self.base.consume((self.map_op)(item));
-            if self.base.full() { return self; }
-        }
-
         self.base = self.base.consume(item.clone());
 
-        if self.base.full() { return self; }
-        self.base = self.base.consume((self.map_op)(item));
+        if !self.base.full() {
+            self.base = self.base.consume((self.map_op)(item));
+        }
 
         self
     }
@@ -561,28 +550,14 @@ impl<'f, C, F, T> Folder<T> for MapInterleavedFolder<'f, C, F, T>
         where
             I: IntoIterator<Item = T>,
     {
-        if let Some(item) = self.front.take() {
-            let mapped = (self.map_op)(item);
-            self.base = self.base.consume(mapped);
-            if self.base.full() { return self; }
-        }
 
         for item in iter.into_iter() {
+            if self.base.full() { break; }
             self.base = self.base.consume(item.clone());
-            if self.base.full() { return self; }
 
-            let mapped = (self.map_op)(item);
-            self.base = self.base.consume(mapped);
-            if self.base.full() { return self; }
+            if self.base.full() { break; }
+            self.base = self.base.consume((self.map_op)(item));
         }
-
-        // TODO investigate if this is correct here: it would appear that complete() is the place
-        //      to consume the rear item, if any, but it appears that the base consumer may assert
-        //      the correct length before this gets called.
-        //      For now the operation is done at <MapInterleaved as Producer>::with_folder()
-        // if let Some(item) = self.back.take() {
-        //     self.base = self.base.consume(item);
-        // }
 
         self
     }

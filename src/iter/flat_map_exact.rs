@@ -332,33 +332,35 @@ impl<'a, P, A, F, R> Producer for FlatMapExactProducer<'a, P, A, F>
         }
     }
 
-    fn fold_with<G>(self, folder: G) -> G
+    fn fold_with<G>(mut self, folder: G) -> G
         where
             G: Folder<Self::Item>,
     {
 
-        let folder1 = FlatMapExactFolder {
+        let mut folder1 = FlatMapExactFolder {
             base: folder,
             map_op: self.map_op,
             args: self.args,
-            front: self.front,
-            back: self.back,
         };
 
-        // TODO investigate if this is correct here: it would appear that complete() is the place
-        //      to consume the rear item, if any, but it appears that the base consumer may assert
-        //      the correct length before this gets called.
-        // Consume the last item before any correctness assertions are performed.
+        // Consume the front, if present.
+        if let Some(front) = self.front.take() {
+            let iter = front.args_iter(self.args)
+                .map(|(item, arg)| (self.map_op)(item.clone(), arg));
+
+            folder1.base = folder1.base.consume_iter(iter);
+        }
+
+        // Consume the base.
         let mut folder = self.base.fold_with(folder1);
 
-        if !folder.base.full() {
-            if let Some(back) = folder.back {
-                let map_op = folder.map_op;
-                let iter = back.args_iter(self.args)
-                    .map(|(item, arg)| map_op(item.clone(), arg));
+        // Consume the back, if present.
+        if let Some(back) = self.back.take() {
+            let map_op = folder.map_op;
+            let iter = back.args_iter(self.args)
+                .map(|(item, arg)| map_op(item.clone(), arg));
 
-                folder.base = folder.base.consume_iter(iter);
-            }
+            folder.base = folder.base.consume_iter(iter);
         }
 
         folder.base
@@ -604,7 +606,7 @@ impl<'a, C, F, A, T, R> Consumer<T> for FlatMapExactConsumer<'a, C, A, F>
           T: Clone,
           A: ArgSource,
 {
-    type Folder = FlatMapExactFolder<'a, C::Folder, T, A, F>;
+    type Folder = FlatMapExactFolder<'a, C::Folder, A, F>;
     type Reducer = C::Reducer;
     type Result = C::Result;
 
@@ -630,8 +632,6 @@ impl<'a, C, F, A, T, R> Consumer<T> for FlatMapExactConsumer<'a, C, A, F>
             base: self.base.into_folder(),
             map_op: self.map_op,
             args: self.args,
-            front: None,
-            back: None,
         }
     }
 
@@ -661,16 +661,13 @@ impl<'a, T, C, A, F, R> UnindexedConsumer<T> for FlatMapExactConsumer<'a, C, A, 
     }
 }
 
-struct FlatMapExactFolder<'f, C, T, A, F> {
+struct FlatMapExactFolder<'f, C, A, F> {
     base: C,
     map_op: &'f F,
     args: &'f A,
-    front: Option<BaseItem<T>>,
-    // TODO this is possibly redundant
-    back: Option<BaseItem<T>>,
 }
 
-impl<'a, C, F, T, A, R> Folder<T> for FlatMapExactFolder<'a, C, T, A, F>
+impl<'a, C, F, T, A, R> Folder<T> for FlatMapExactFolder<'a, C, A, F>
     where
         C: Folder<F::Output>,
         F: Fn(T, &'a A::Item) -> R,
@@ -682,17 +679,6 @@ impl<'a, C, F, T, A, R> Folder<T> for FlatMapExactFolder<'a, C, T, A, F>
     fn consume(mut self, item: T) -> Self {
         let (map_op, args) = (self.map_op, self.args);
 
-        // Consume the front if present.
-        if let Some(front) = self.front.take() {
-            let iter = front.args_iter(args)
-                .map(|(item, arg)| map_op(item, arg));
-
-            self.base = self.base.consume_iter(iter);
-        }
-
-        // Finish early if base is full.
-        if self.base.full() { return self; }
-
         // Consume `item`.
         let args_len = self.args.len();
         let iter = BaseItem(item, 0..args_len)
@@ -700,9 +686,6 @@ impl<'a, C, F, T, A, R> Folder<T> for FlatMapExactFolder<'a, C, T, A, F>
             .map(|(item, arg)| map_op(item, arg));
 
         self.base = self.base.consume_iter(iter);
-
-        // NOTE: `self.back` is consumed by `FlatMapExactProducer::fold_with`.
-
         self
     }
 
@@ -710,17 +693,6 @@ impl<'a, C, F, T, A, R> Folder<T> for FlatMapExactFolder<'a, C, T, A, F>
         where I: IntoIterator<Item=T>,
     {
         let (map_op, args) = (self.map_op, self.args);
-
-        // Consume the front if present.
-        if let Some(front) = self.front.take() {
-            let iter = front.args_iter(args)
-                .map(|(item, arg)| map_op(item, arg));
-
-            self.base = self.base.consume_iter(iter);
-        }
-
-        // Finish early if base is full.
-        if self.base.full() { return self; }
 
         // Consume `iter`.
         let args_len = self.args.len();
@@ -732,8 +704,6 @@ impl<'a, C, F, T, A, R> Folder<T> for FlatMapExactFolder<'a, C, T, A, F>
         });
 
         self.base = self.base.consume_iter(iter);
-
-        // NOTE: `self.back` is consumed by `FlatMapExactProducer::fold_with`.
 
         self
     }
@@ -866,14 +836,22 @@ mod test {
     fn check_combo() {
         set_rayon_threads(1);
 
-        let add_nums = vec![1, 2, 3];
-        let base_nums = vec![10, 20, 30];
+        let nums = vec![1, 2, 3];
+        let deltas = vec![0, 1, 2];
 
-        let par_nums = base_nums.into_par_iter()
-            .map_interleave(|_| 0)
-            .flat_map_exact(&add_nums[..], |base, add| base + *add)
-            .skip(1);
-        assert_eq!(par_nums.collect::<Vec<_>>(), vec![11, 12, 13, 21, 22, 23, 31, 32, 33]);
+        let par_nums = nums.clone().into_par_iter()
+            .map_interleave(|num| num * 10)
+            .flat_map_exact(&deltas[..], |num, delta| num + *delta)
+            .skip(1)
+            .collect::<Vec<_>>();
+
+        let seq_nums = nums.into_iter()
+            .flat_map(|num| vec![num, num * 10])
+            .flat_map(|num| deltas.iter().map(move |delta| num + delta))
+            .skip(1)
+            .collect::<Vec<_>>();
+
+        assert_eq!(par_nums, seq_nums);
 
     }
 }
