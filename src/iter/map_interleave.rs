@@ -327,8 +327,10 @@ impl<'f, P, F> Producer for MapInterleavedProducer<'f, P, F>
         let mut folder = self.base.fold_with(folder1);
 
         // Consume the back, if present.
-        if let Some(item) = self.back.take() {
-            folder.base = folder.base.consume(item);
+        if !folder.full() {
+            if let Some(item) = self.back.take() {
+                folder.base = folder.base.consume(item);
+            }
         }
 
         folder.base
@@ -347,30 +349,18 @@ impl<'f, P, F> PopProducer for MapInterleavedProducer<'f, P, F>
             self.len -= 1;
         }
 
-        if let Some(front) = self.front.take() {
-            Some((self.map_op)(front))
-        } else if let Some(item) = self.base.try_pop() {
-            self.front = Some(item.clone());
-            Some(item)
-        } else if let Some(back) = self.back.take() {
-            Some(back)
-        } else {
-            unreachable!()
-        }
+        let result = self.front.take()
+            .map(self.map_op)
+            .or_else(||
+                self.base.try_pop().map(|item| {
+                    self.front = Some(item.clone());
+                    item
+                }))
+            .or_else(|| self.back.take());
 
-        // self.front.take()
-        //     .map(self.map_op)
-        //     .or_else(||
-        //         self.base.try_pop().map(|item| {
-        //             self.front = Some(item.clone());
-        //             item
-        //         }))
-        //     .or_else(|| self.back.take())
-        //     .map(|item| {
-        //         debug_assert!(self.len > 0);
-        //         self.len -= 1;
-        //         item
-        //     })
+        debug_assert!(result.is_some());
+        result
+        // TODO just unwrap at this point
     }
 }
 

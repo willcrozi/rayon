@@ -104,7 +104,7 @@ impl<I,A, F, R> IndexedParallelIterator for FlatMapExact<I, A, F>
         impl<F, T, A, R, CB> PopProducerCallback<T> for Callback<CB, A, F>
             where CB: ProducerCallback<R>,
                   T: Clone + Send,
-                  F: Fn(T, &A::Item) -> R + Sync + Send,
+                  F: Fn(T, &A::Item) -> R + Sync,
                   A: ArgSource,
                   R: Send,
         {
@@ -355,12 +355,14 @@ impl<'a, P, A, F, R> Producer for FlatMapExactProducer<'a, P, A, F>
         let mut folder = self.base.fold_with(folder1);
 
         // Consume the back, if present.
-        if let Some(back) = self.back.take() {
-            let map_op = folder.map_op;
-            let iter = back.args_iter(self.args)
-                .map(|(item, arg)| map_op(item.clone(), arg));
+        if !folder.full() {
+            if let Some(back) = self.back.take() {
+                let map_op = folder.map_op;
+                let iter = back.args_iter(self.args)
+                    .map(|(item, arg)| map_op(item.clone(), arg));
 
-            folder.base = folder.base.consume_iter(iter);
+                folder.base = folder.base.consume_iter(iter);
+            }
         }
 
         folder.base
@@ -739,11 +741,6 @@ impl<T: Clone> BaseItem<T> {
         if args.len() == 0 { return None; }
 
         let BaseItem(ref item, ref mut range) = self;
-
-        // Debug
-        if range.start >= args.len() {
-            println!("BaseItem range: {:?}", range);
-        }
 
         // Args::get below should panic anyway but for debug this is clearer.
         debug_assert!(range.start < args.len());
