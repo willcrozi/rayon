@@ -241,6 +241,12 @@ impl<I> IterCache<I>
     }
 }
 
+impl<I> From<I> for IterCache<I>
+where I: ExactSizeIterator + DoubleEndedIterator
+{
+    fn from(iter: I) -> Self { IterCache::new(iter) }
+}
+
 unsafe impl<I: Iterator> Sync for IterCache<I> where I::Item: Sync {}
 unsafe impl<I: Iterator> Send for IterCache<I> where I::Item: Send {}
 
