@@ -6,12 +6,6 @@ use std::ops::Range;
 // TODO future ideas:
 //      * version with parallel arguments (uses poppable producer)
 
-// TODO a type that wraps Fn and Args, maybe call it MapArgs?
-//      benefits:
-//          * Reduces generic boilerplate on types, impls,  and functions.
-//          * Improves ergonomics (less repetition, can provide iterator mapping item to
-
-
 /// `FlatMapExact` is an iterator...
 #[must_use = "iterator adaptors are lazy and do nothing unless consumed"]
 #[derive(Clone, Debug)]
@@ -376,43 +370,45 @@ impl<'a, P, A, F, R> PopProducer for FlatMapExactProducer<'a, P, A, F>
           A: ArgSource,
           R: Send,
 {
-    fn try_pop(&mut self) -> Option<Self::Item> {
-        let (map_op, args) = (self.map_op, self.args);
+    fn pop(&mut self) -> Self::Item {
+        // Debug: Release builds will still panic below if these don't hold.
+        debug_assert!(self.len > 0);
+        debug_assert!(self.args.len() > 0);
+
+        // Cache the current length.
+        let len = self.len;
+        self.len -= 1;
 
         // Try the front.
         if let Some(ref mut front) = self.front {
-            if let Some((item, arg)) = front.pop_args(args) {
-                return Some((self.map_op)(item, arg));
+            if front.len() > 0 {
+                let (item, arg) = front.pop_args(self.args).unwrap();
+                return (self.map_op)(item, arg);
             } else {
                 // Front is empty, 'fuse' it.
                 self.front = None;
             }
         }
 
-        // Front is empty, try base producer.
-        if let Some(item) = self.base.try_pop() {
-            // We have to check for empty args list here...
-            if args.len() == 0 { return None; }
-
-            // Since we've popped from the base we now need a 'partial' item at the front.
-            self.front = Some(BaseItem(item.clone(), 1..args.len()));
-
-            let mapped = map_op(item, args.get(0));
-            return Some(mapped);
+        // Derive base-length, if empty pop from back.
+        if let Some(ref mut back) = self.back {
+            let back_len = back.1.len();
+            if len - back_len == 0 {
+                // Nothing in base, pop from back
+                let (item, arg) = back.pop_args(self.args).unwrap();
+                return (self.map_op)(item, arg);
+            }
         }
 
-        // Base is empty, try the back.
-        if let Some(ref mut back) = self.back {
-            if let Some((item, arg)) = back.pop_args(args) {
-                return Some((self.map_op)(item, arg));
-            } else {
-                // Back is empty, 'fuse' it.
-                self.back = None;
-            }
-        };
+        // Pop and split from base, populating front with right hand side of split.
+        let item = self.base.pop();
+        let args_len = self.args.len();
 
-        // Producer empty.
-        None
+        if args_len > 1 {
+            self.front = Some(BaseItem(item.clone(), 1..args_len));
+        }
+
+        (self.map_op)(item, self.args.get(0))
     }
 }
 

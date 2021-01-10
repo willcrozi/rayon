@@ -231,8 +231,8 @@ impl<'data, T: 'data + Send> Drop for DrainProducer<'data, T> {
 }
 
 impl <'data, T: 'data + Send> PopProducer for DrainProducer<'data, T> {
-    fn try_pop(&mut self) -> Option<T> {
-        if self.slice.is_empty() { return None; }
+    fn pop(&mut self) -> T {
+        if self.slice.is_empty() { panic!("slice is empty"); }
 
         unsafe {
             let len = self.slice.len();
@@ -241,7 +241,7 @@ impl <'data, T: 'data + Send> PopProducer for DrainProducer<'data, T> {
             let slice_ptr = self.slice.as_mut_ptr().offset(1);
             self.slice = slice::from_raw_parts_mut(slice_ptr, len - 1);
 
-            Some(ptr::read(ptr))
+            ptr::read(ptr)
         }
     }
 }

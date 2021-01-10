@@ -124,13 +124,7 @@ pub trait Producer: Send + Sized {
 /// Poppable producer (experiment)
 pub trait PopProducer: Producer {
     /// Removes and returns the first item of this Producer. Panics if this producer is empty.
-    fn pop(&mut self) -> Self::Item {
-        self.try_pop().unwrap()
-    }
-
-    /// Attempts to remove and return the first item of this Producer. Returns `None` if this
-    /// producer is empty.
-    fn try_pop(&mut self) -> Option<Self::Item>;
+    fn pop(&mut self) -> Self::Item;
 }
 
 /// A consumer is effectively a [generalized "fold" operation][fold],

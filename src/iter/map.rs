@@ -208,8 +208,9 @@ impl<'f, P, F, R> PopProducer for MapProducer<'f, P, F>
         F: Fn(P::Item) -> R + Sync,
         R: Send,
 {
-    fn try_pop(&mut self) -> Option<Self::Item> {
-        self.base.try_pop().map(|item| (self.map_op)(item))
+    fn pop(&mut self) -> Self::Item {
+        let item = self.base.pop();
+        (self.map_op)(item)
     }
 }
 

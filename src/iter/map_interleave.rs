@@ -342,25 +342,24 @@ impl<'f, P, F> PopProducer for MapInterleavedProducer<'f, P, F>
           P::Item: Clone + Send,
           F: Fn(P::Item) -> P::Item + Sync,
 {
-    fn try_pop(&mut self) -> Option<Self::Item> {
-        if self.len < 1 {
-            return None;
+    fn pop(&mut self) -> Self::Item {
+        debug_assert!(self.len > 0);
+
+        // Cache the current length.
+        let len = self.len;
+        self.len -= 1;
+
+        if let Some(front) = self.front.take() {
+            (self.map_op)(front)
+        } else if len == 1 && self.back.is_some() {
+            // Base is empty, pop from back.
+            self.back.take().unwrap()
         } else {
-            self.len -= 1;
+            // Pop from base.
+            let item = self.base.pop();
+            self.front = Some(item.clone());
+            item
         }
-
-        let result = self.front.take()
-            .map(self.map_op)
-            .or_else(||
-                self.base.try_pop().map(|item| {
-                    self.front = Some(item.clone());
-                    item
-                }))
-            .or_else(|| self.back.take());
-
-        debug_assert!(result.is_some());
-        result
-        // TODO just unwrap at this point
     }
 }
 
