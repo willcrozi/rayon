@@ -8,7 +8,7 @@ use std::ptr::{self, NonNull};
 use std::sync::Arc;
 
 /// Helper to set the number of threads used by rayon's thread-pool.
-//#[allow(dead_code)]
+#[allow(dead_code)]
 pub(crate) fn set_rayon_threads(count: usize) {
     crate::ThreadPoolBuilder::new()
         .num_threads(count)
