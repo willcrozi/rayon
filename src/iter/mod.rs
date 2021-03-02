@@ -105,6 +105,7 @@ mod test;
 mod chain;
 mod chunks;
 mod chunks_fold;
+mod chunks_maybe_fold;
 mod cloned;
 mod collect;
 mod copied;
@@ -157,6 +158,7 @@ pub use self::{
     chain::Chain,
     chunks::Chunks,
     chunks_fold::ChunksFold,
+    chunks_maybe_fold::ChunksMaybeFold,
     cloned::Cloned,
     copied::Copied,
     empty::{empty, Empty},
@@ -2417,13 +2419,47 @@ pub trait IndexedParallelIterator: ParallelIterator {
     /// assert_eq!(chunk_sums, vec![3, 7, 11, 15, 19]);
     /// ```
     fn chunks_fold<ID, F, U>(self, chunk_size: usize, identity: ID, fold_op: F)
-                             -> ChunksFold<Self, ID, F>
-        where
-            ID: Fn() -> U + Send + Sync,
-            F: Fn(U, Self::Item) -> U + Send + Sync,
+        -> ChunksFold<Self, ID, F>
+    where
+        ID: Fn() -> U + Send + Sync,
+        F: Fn(U, Self::Item) -> U + Send + Sync,
     {
         assert!(chunk_size != 0, "chunk_size must not be zero");
         ChunksFold::new(self, chunk_size, identity, fold_op)
+    }
+
+    /// Splits an iterator into fixed-size chunks, optionally performing a sequential [`fold()`] on
+    /// each chunk. The decision of whether to yield the folded result of each chunk is made by
+    /// the provided `identity` function, which is called for each chunk with the chunk's start
+    /// position within this iterator as its argument. If `identity` yields `Some` for a chunk then
+    /// that chunk is folded and yielded, if `None` is yielded then `Some(None)` would be yielded.
+    ///
+    /// Returns an iterator that produces an optional folded result for each chunk of items
+    /// produced by this iterator.
+    ///
+    /// [`fold()`]: std::iter::Iterator#method.fold
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rayon::prelude::*;
+    /// let sums = (0..10).into_par_iter()
+    ///     .chunks_maybe_fold(
+    ///         2,
+    ///         |pos| if (2..6).contains(&pos)  { Some(0) } else { None },
+    ///         |acc, n| acc + n,
+    ///     ).collect::<Vec<_>>();
+    ///
+    /// assert_eq!(sums, vec![None, Some(5), Some(9), None, None]);
+    /// ```
+    fn chunks_maybe_fold<ID, F, U>(self, chunk_size: usize, identity: ID, fold_op: F)
+                             -> ChunksMaybeFold<Self, ID, F>
+        where
+            ID: Fn(usize) -> Option<U> + Send + Sync,
+            F: Fn(U, Self::Item) -> U + Send + Sync,
+    {
+        assert!(chunk_size != 0, "chunk_size must not be zero");
+        ChunksMaybeFold::new(self, chunk_size, identity, fold_op)
     }
 
     /// Lexicographically compares the elements of this `ParallelIterator` with those of
