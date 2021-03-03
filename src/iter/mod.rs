@@ -145,6 +145,7 @@ mod skip;
 mod splitter;
 mod sum;
 mod take;
+mod trim;
 mod try_fold;
 mod try_reduce;
 mod try_reduce_with;
@@ -188,6 +189,7 @@ pub use self::{
     skip::Skip,
     splitter::{split, Split},
     take::Take,
+    trim::Trim,
     try_fold::{TryFold, TryFoldWith},
     update::Update,
     while_some::WhileSome,
@@ -2692,6 +2694,23 @@ pub trait IndexedParallelIterator: ParallelIterator {
     fn take(self, n: usize) -> Take<Self> {
         Take::new(self, n)
     }
+
+    /// Creates an iterator that yields only the elements within `range`. The elements outside
+    /// of range are not iterated and have no side-effects.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rayon::prelude::*;
+    ///
+    /// let result: Vec<_> = (0..10)
+    ///     .into_par_iter()
+    ///     .trim(3..=5)
+    ///     .collect();
+    ///
+    /// assert_eq!(result, [3, 4, 5]);
+    /// ```
+    fn trim(self, range: impl RangeBounds<usize>) -> Trim<Self> { Trim:: new(self, range) }
 
     /// Searches for **some** item in the parallel iterator that
     /// matches the given predicate, and returns its index.  Like
