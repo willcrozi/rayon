@@ -34,6 +34,21 @@ pub trait ArgSource: Sync + Send {
     fn try_get(&self, index: usize) -> Option<&Self::Item>;
 }
 
+impl<T,const C: usize> ArgSource for [T; C]
+    where
+        T: Sync + Send
+{
+    type Item = T;
+
+    fn len(&self) -> usize { C }
+
+    fn get(&self, index: usize) -> &Self::Item { &self[index] }
+
+    fn try_get(&self, index: usize) -> Option<&Self::Item> {
+        if index < C { Some(&self[index]) } else { None }
+    }
+}
+
 // Design notes:
 
 // Approach (1)
