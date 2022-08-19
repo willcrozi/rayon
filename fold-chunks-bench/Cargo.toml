@@ -1,0 +1,18 @@
+[package]
+name = "fold-chunks-bench"
+version = "0.1.0"
+edition = "2021"
+
+[dev-dependencies]
+rayon = { path = "../" }
+criterion = "0.3"
+itertools = "0.10"
+
+[[bench]]
+name = "fold_chunks_bench"
+harness = false
+
+[workspace] # (hack) avoid need to modify 'parent' workspace
+
+[patch.crates-io]
+rayon = { path = "../"} # (hack) avoid rayon version conflict with criterion dep
